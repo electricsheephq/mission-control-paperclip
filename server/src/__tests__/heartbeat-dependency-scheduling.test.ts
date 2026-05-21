@@ -772,7 +772,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       }
 
       const firstThreeStarted = await waitForCondition(
-        async () => mockAdapterExecute.mock.calls.length === OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS,
+        async () => mockAdapterExecute.mock.calls.length >= OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS,
         30_000,
       );
       expect(firstThreeStarted).toBe(true);

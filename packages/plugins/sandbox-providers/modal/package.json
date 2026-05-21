@@ -3,13 +3,13 @@
   "version": "0.1.0",
   "description": "Modal sandbox provider plugin for Paperclip environments",
   "license": "MIT",
-  "homepage": "https://github.com/paperclipai/paperclip",
+  "homepage": "https://github.com/electricsheephq/mission-control-paperclip",
   "bugs": {
-    "url": "https://github.com/paperclipai/paperclip/issues"
+    "url": "https://github.com/electricsheephq/mission-control-paperclip/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/paperclipai/paperclip",
+    "url": "https://github.com/electricsheephq/mission-control-paperclip",
     "directory": "packages/plugins/sandbox-providers/modal"
   },
   "type": "module",
