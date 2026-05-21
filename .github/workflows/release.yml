@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -45,10 +45,11 @@ jobs:
           version: 9.15.4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
@@ -77,7 +78,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -87,10 +88,11 @@ jobs:
           version: 9.15.4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
@@ -109,7 +111,13 @@ jobs:
       - name: Publish canary
         env:
           GITHUB_ACTIONS: "true"
-        run: ./scripts/release.sh canary --skip-verify
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
+        run: |
+          unset NODE_AUTH_TOKEN NPM_TOKEN
+          if [ -n "${NPM_CONFIG_USERCONFIG:-}" ] && [ -f "$NPM_CONFIG_USERCONFIG" ]; then
+            sed -i '/_authToken/d;/always-auth/d' "$NPM_CONFIG_USERCONFIG"
+          fi
+          ./scripts/release.sh canary --skip-verify
 
       - name: Push canary tag
         run: |
@@ -129,7 +137,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ inputs.source_ref }}
@@ -140,10 +148,11 @@ jobs:
           version: 9.15.4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
@@ -170,7 +179,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ inputs.source_ref }}
@@ -181,10 +190,11 @@ jobs:
           version: 9.15.4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       - name: Validate release package manifest
         run: node ./scripts/release-package-map.mjs check
@@ -214,7 +224,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           ref: ${{ inputs.source_ref }}
@@ -225,10 +235,11 @@ jobs:
           version: 9.15.4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
+          package-manager-cache: false
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
@@ -244,7 +255,12 @@ jobs:
       - name: Publish stable
         env:
           GITHUB_ACTIONS: "true"
+          NPM_CONFIG_REGISTRY: https://registry.npmjs.org/
         run: |
+          unset NODE_AUTH_TOKEN NPM_TOKEN
+          if [ -n "${NPM_CONFIG_USERCONFIG:-}" ] && [ -f "$NPM_CONFIG_USERCONFIG" ]; then
+            sed -i '/_authToken/d;/always-auth/d' "$NPM_CONFIG_USERCONFIG"
+          fi
           args=(stable --skip-verify)
           if [ -n "${{ inputs.stable_date }}" ]; then
             args+=(--date "${{ inputs.stable_date }}")
