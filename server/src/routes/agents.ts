@@ -184,6 +184,37 @@ export function agentRoutes(
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
+  async function pauseAgentAfterOpenClawProvisioningFailure(input: {
+    agent: { id: string; companyId: string };
+    actor: {
+      actorType: "agent" | "user" | "system" | "plugin";
+      actorId: string;
+      agentId?: string | null;
+      runId?: string | null;
+    };
+    detail: string;
+  }) {
+    const paused = await svc.update(input.agent.id, {
+      status: "paused",
+      pauseReason: `OpenClaw provisioning failed: ${input.detail}`,
+    }).catch(() => null);
+    if (!paused) return;
+    await logActivity(db, {
+      companyId: input.agent.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId ?? null,
+      runId: input.actor.runId ?? null,
+      action: "agent.paused",
+      entityType: "agent",
+      entityId: input.agent.id,
+      details: {
+        reason: "openclaw_provisioning_failed",
+        error: input.detail,
+      },
+    }).catch(() => undefined);
+  }
+
   async function assertAgentEnvironmentSelection(
     companyId: string,
     adapterType: string,
@@ -2165,6 +2196,7 @@ export function agentRoutes(
       return;
     }
 
+    const actor = getActorInfo(req);
     const requiresApproval = company.requireBoardApprovalForNewAgents;
     const status = requiresApproval ? "pending_approval" : "idle";
     if (status === "idle") {
@@ -2182,16 +2214,12 @@ export function agentRoutes(
         await openClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow(agent);
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
-        await svc.update(agent.id, {
-          status: "paused",
-          pauseReason: `OpenClaw provisioning failed: ${detail}`,
-        }).catch(() => undefined);
+        await pauseAgentAfterOpenClawProvisioningFailure({ agent, actor, detail });
         throw err;
       }
     }
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
-    const actor = getActorInfo(req);
 
     if (requiresApproval) {
       const requestedAdapterType = normalizedHireInput.adapterType ?? agent.adapterType;
@@ -2378,14 +2406,12 @@ export function agentRoutes(
       lastHeartbeatAt: null,
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
+    const actor = getActorInfo(req);
     try {
       await openClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow(agent);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      await svc.update(agent.id, {
-        status: "paused",
-        pauseReason: `OpenClaw provisioning failed: ${detail}`,
-      }).catch(() => undefined);
+      await pauseAgentAfterOpenClawProvisioningFailure({ agent, actor, detail });
       throw err;
     }
     const agentEnv = asRecord(agent.adapterConfig)?.env;
@@ -2396,8 +2422,6 @@ export function agentRoutes(
         agentEnv,
       );
     }
-
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
@@ -2971,10 +2995,14 @@ export function agentRoutes(
       await openClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow(agent);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      await svc.update(agent.id, {
-        status: "paused",
-        pauseReason: `OpenClaw provisioning failed: ${detail}`,
-      }).catch(() => undefined);
+      await pauseAgentAfterOpenClawProvisioningFailure({
+        agent,
+        actor: {
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+        },
+        detail,
+      });
       throw err;
     }
 

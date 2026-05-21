@@ -70,13 +70,49 @@ export function canonicalizeOpenClawGatewayUrl(value: unknown): string {
   }
 }
 
+export function openClawGatewayUrlSqlCandidates(value: unknown): string[] {
+  const raw = asNonEmptyString(value);
+  const canonical = canonicalizeOpenClawGatewayUrl(raw);
+  const candidates = new Set<string>();
+  if (raw) candidates.add(raw);
+  if (canonical) candidates.add(canonical);
+
+  try {
+    const parsed = new URL(canonical || raw || "");
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol !== "ws:" && protocol !== "wss:") {
+      return Array.from(candidates);
+    }
+    const port = parsed.port ? `:${parsed.port}` : "";
+    const pathname = parsed.pathname && parsed.pathname !== "/"
+      ? parsed.pathname.replace(/\/+$/, "")
+      : "";
+    const search = parsed.search || "";
+    const hosts = parsed.hostname === "127.0.0.1"
+      ? ["127.0.0.1", "localhost", "[::1]"]
+      : [parsed.hostname];
+    for (const host of hosts) {
+      const base = `${protocol}//${host}${port}${pathname}${search}`;
+      candidates.add(base);
+      if (!pathname && !search) candidates.add(`${base}/`);
+    }
+  } catch {
+    // Fall through to the raw/canonical candidates.
+  }
+
+  return Array.from(candidates);
+}
+
 export function isLocalOpenClawGatewayUrl(value: unknown): boolean {
   const raw = asNonEmptyString(value);
   if (!raw) return false;
   try {
     const parsed = new URL(raw);
     if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") return false;
-    return parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "::1";
+    return parsed.hostname === "127.0.0.1" ||
+      parsed.hostname === "localhost" ||
+      parsed.hostname === "::1" ||
+      parsed.hostname === "[::1]";
   } catch {
     return false;
   }

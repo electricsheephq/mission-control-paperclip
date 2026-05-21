@@ -8,6 +8,7 @@ import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { openClawGatewayProvisioningService } from "./openclaw-gateway-provisioning.js";
+import { logActivity } from "./activity-log.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
@@ -37,15 +38,30 @@ export function approvalService(db: Db) {
     return existing;
   }
 
-  async function ensureOpenClawProvisionedOrPause(agent: AgentRecord): Promise<void> {
+  async function ensureOpenClawProvisionedOrPause(agent: AgentRecord, decidedByUserId: string): Promise<void> {
     try {
       await openClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow(agent);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
-      await agentsSvc.update(agent.id, {
+      const paused = await agentsSvc.update(agent.id, {
         status: "paused",
         pauseReason: `OpenClaw provisioning failed: ${detail}`,
-      }).catch(() => undefined);
+      }).catch(() => null);
+      if (paused) {
+        await logActivity(db, {
+          companyId: agent.companyId,
+          actorType: "user",
+          actorId: decidedByUserId,
+          action: "agent.paused",
+          entityType: "agent",
+          entityId: agent.id,
+          details: {
+            reason: "openclaw_provisioning_failed",
+            error: detail,
+            source: "approval_service",
+          },
+        }).catch(() => undefined);
+      }
       throw err;
     }
   }
@@ -131,7 +147,7 @@ export function approvalService(db: Db) {
         if (payloadAgentId) {
           const activated = await agentsSvc.activatePendingApproval(payloadAgentId);
           if (activated?.activated) {
-            await ensureOpenClawProvisionedOrPause(activated.agent);
+            await ensureOpenClawProvisionedOrPause(activated.agent, decidedByUserId);
           }
           hireApprovedAgentId = payloadAgentId;
         } else {
@@ -157,7 +173,7 @@ export function approvalService(db: Db) {
             permissions: undefined,
             lastHeartbeatAt: null,
           });
-          await ensureOpenClawProvisionedOrPause(created);
+          await ensureOpenClawProvisionedOrPause(created, decidedByUserId);
           hireApprovedAgentId = created?.id ?? null;
         }
         if (hireApprovedAgentId) {

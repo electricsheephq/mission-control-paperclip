@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   canonicalizeOpenClawGatewayUrl,
+  openClawGatewayUrlSqlCandidates,
   openClawGatewayProvisioningService,
 } from "../services/openclaw-gateway-provisioning.js";
 
@@ -40,6 +41,14 @@ describe("openClawGatewayProvisioningService", () => {
     expect(canonicalizeOpenClawGatewayUrl("ws://localhost:18790/")).toBe("ws://127.0.0.1:18790");
     expect(canonicalizeOpenClawGatewayUrl("ws://127.0.0.1:18790")).toBe("ws://127.0.0.1:18790");
     expect(canonicalizeOpenClawGatewayUrl("ws://[::1]:18790/")).toBe("ws://127.0.0.1:18790");
+    expect(openClawGatewayUrlSqlCandidates("ws://localhost:18790/")).toEqual(expect.arrayContaining([
+      "ws://127.0.0.1:18790",
+      "ws://127.0.0.1:18790/",
+      "ws://localhost:18790",
+      "ws://localhost:18790/",
+      "ws://[::1]:18790",
+      "ws://[::1]:18790/",
+    ]));
   });
 
   async function writeCaptureProvisioner(capturePath: string) {

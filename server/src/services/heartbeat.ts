@@ -117,7 +117,10 @@ import {
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
-import { canonicalizeOpenClawGatewayUrl } from "./openclaw-gateway-provisioning.js";
+import {
+  canonicalizeOpenClawGatewayUrl,
+  openClawGatewayUrlSqlCandidates,
+} from "./openclaw-gateway-provisioning.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
   gateProjectExecutionWorkspacePolicy,
@@ -5938,6 +5941,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     companyId: string;
     url: string;
   }) {
+    const urlCandidates = openClawGatewayUrlSqlCandidates(input.url);
+    if (urlCandidates.length === 0) return 0;
     const rows = await db
       .select({ adapterConfig: agents.adapterConfig })
       .from(heartbeatRuns)
@@ -5946,6 +5951,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eq(heartbeatRuns.status, "running"),
         eq(agents.companyId, input.companyId),
         eq(agents.adapterType, "openclaw_gateway"),
+        inArray(sql<string>`${agents.adapterConfig} ->> 'url'`, urlCandidates),
       ));
     return rows.filter((row) =>
       canonicalizeOpenClawGatewayUrl(parseObject(row.adapterConfig).url) === input.url,
@@ -5956,6 +5962,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     companyId: string;
     url: string;
   }) {
+    const urlCandidates = openClawGatewayUrlSqlCandidates(input.url);
+    if (urlCandidates.length === 0) return [];
     const rows = await db
       .select({
         agentId: agents.id,
@@ -5968,6 +5976,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eq(heartbeatRuns.status, "queued"),
         eq(agents.companyId, input.companyId),
         eq(agents.adapterType, "openclaw_gateway"),
+        inArray(sql<string>`${agents.adapterConfig} ->> 'url'`, urlCandidates),
       ));
 
     const oldestQueuedAtByAgent = new Map<string, Date>();

@@ -9,6 +9,7 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockNotifyHireApproved = vi.hoisted(() => vi.fn());
+const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockOpenClawProvisioning = vi.hoisted(() => ({
   ensureOpenClawProvisionedForAgentOrThrow: vi.fn(),
 }));
@@ -23,6 +24,10 @@ vi.mock("../services/openclaw-gateway-provisioning.js", () => ({
 
 vi.mock("../services/hire-hook.js", () => ({
   notifyHireApproved: mockNotifyHireApproved,
+}));
+
+vi.mock("../services/activity-log.js", () => ({
+  logActivity: mockLogActivity,
 }));
 
 type ApprovalRecord = {
@@ -69,15 +74,17 @@ describe("approvalService resolution idempotency", () => {
     mockAgentService.activatePendingApproval.mockResolvedValue({
       agent: {
         id: "agent-1",
+        companyId: "company-1",
         adapterType: "openclaw_gateway",
         adapterConfig: { agentId: "cmo" },
       },
       activated: true,
     });
-    mockAgentService.create.mockResolvedValue({ id: "agent-1" });
+    mockAgentService.create.mockResolvedValue({ id: "agent-1", companyId: "company-1" });
     mockAgentService.update.mockResolvedValue({ id: "agent-1", status: "paused" });
     mockAgentService.terminate.mockResolvedValue(undefined);
     mockNotifyHireApproved.mockResolvedValue(undefined);
+    mockLogActivity.mockResolvedValue(undefined);
     mockOpenClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow.mockResolvedValue(undefined);
   });
 
@@ -131,6 +138,7 @@ describe("approvalService resolution idempotency", () => {
     mockAgentService.activatePendingApproval.mockResolvedValue({
       agent: {
         id: "agent-1",
+        companyId: "company-1",
         adapterType: "openclaw_gateway",
         adapterConfig: { agentId: "cmo" },
       },
@@ -150,6 +158,18 @@ describe("approvalService resolution idempotency", () => {
         pauseReason: expect.stringContaining("OpenClaw provisioning failed"),
       }),
     );
+    expect(mockLogActivity).toHaveBeenCalledWith(dbStub.db, expect.objectContaining({
+      companyId: "company-1",
+      actorType: "user",
+      actorId: "board",
+      action: "agent.paused",
+      entityType: "agent",
+      entityId: "agent-1",
+      details: expect.objectContaining({
+        reason: "openclaw_provisioning_failed",
+        source: "approval_service",
+      }),
+    }));
     expect(mockNotifyHireApproved).not.toHaveBeenCalled();
   });
 });
