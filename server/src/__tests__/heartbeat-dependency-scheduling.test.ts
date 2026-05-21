@@ -541,6 +541,152 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     }
   }, 40_000);
 
+  it("throttles OpenClaw Gateway runs across agents sharing the same gateway URL", async () => {
+    const companyId = randomUUID();
+    const firstAgentId = randomUUID();
+    const secondAgentId = randomUUID();
+    const firstIssueId = randomUUID();
+    const secondIssueId = randomUUID();
+    let finishFirstRun!: () => void;
+    const firstRunFinished = new Promise<void>((resolve) => {
+      finishFirstRun = resolve;
+    });
+
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await firstRunFinished;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "First OpenClaw run completed.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: firstAgentId,
+        companyId,
+        name: "Jane",
+        role: "ceo",
+        status: "active",
+        adapterType: "openclaw_gateway",
+        adapterConfig: { url: "ws://127.0.0.1:18790" },
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: 20,
+          },
+        },
+        permissions: {},
+      },
+      {
+        id: secondAgentId,
+        companyId,
+        name: "CMO",
+        role: "cmo",
+        status: "active",
+        adapterType: "openclaw_gateway",
+        adapterConfig: { url: "ws://127.0.0.1:18790" },
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: 20,
+          },
+        },
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values([
+      {
+        id: firstIssueId,
+        companyId,
+        title: "First OpenClaw assignment",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: firstAgentId,
+      },
+      {
+        id: secondIssueId,
+        companyId,
+        title: "Second OpenClaw assignment",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: secondAgentId,
+      },
+    ]);
+
+    try {
+      const firstWake = await heartbeat.wakeup(firstAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: firstIssueId },
+        contextSnapshot: { issueId: firstIssueId, wakeReason: "issue_assigned" },
+      });
+      expect(firstWake).not.toBeNull();
+      await db.insert(issueComments).values({
+        companyId,
+        issueId: firstIssueId,
+        authorAgentId: firstAgentId,
+        authorType: "agent",
+        createdByRunId: firstWake!.id,
+        body: "First OpenClaw run completed.",
+      });
+
+      const firstAdapterStarted = await waitForCondition(async () => mockAdapterExecute.mock.calls.length === 1, 30_000);
+      expect(firstAdapterStarted).toBe(true);
+
+      const secondWake = await heartbeat.wakeup(secondAgentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId: secondIssueId },
+        contextSnapshot: { issueId: secondIssueId, wakeReason: "issue_assigned" },
+      });
+      expect(secondWake).not.toBeNull();
+      await db.insert(issueComments).values({
+        companyId,
+        issueId: secondIssueId,
+        authorAgentId: secondAgentId,
+        authorType: "agent",
+        createdByRunId: secondWake!.id,
+        body: "Second OpenClaw run completed.",
+      });
+
+      const secondRunWhileFirstRunning = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, secondWake!.id))
+        .then((rows) => rows[0] ?? null);
+      expect(secondRunWhileFirstRunning?.status).toBe("queued");
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+
+      finishFirstRun();
+
+      const secondRunSucceeded = await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, secondWake!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
+      }, 30_000);
+      expect(secondRunSucceeded).toBe(true);
+      expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(2);
+    } finally {
+      finishFirstRun();
+    }
+  }, 40_000);
+
   it("cancels stale queued runs when issue blockers are still unresolved", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

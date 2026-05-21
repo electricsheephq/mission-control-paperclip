@@ -16,7 +16,12 @@ import {
   issues,
   issueComments,
 } from "@paperclipai/db";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
+import {
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS,
+  isUuidLike,
+  normalizeAgentUrlKey,
+} from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
@@ -123,13 +128,22 @@ function parseFiniteNumberLike(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function normalizeRuntimeConfigForNewAgent(runtimeConfig: unknown): Record<string, unknown> {
+function defaultMaxConcurrentRunsForAdapter(adapterType: unknown) {
+  return adapterType === "openclaw_gateway"
+    ? OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS
+    : AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+}
+
+function normalizeRuntimeConfigForNewAgent(
+  runtimeConfig: unknown,
+  adapterType: unknown,
+): Record<string, unknown> {
   const normalizedRuntimeConfig = isPlainRecord(runtimeConfig) ? { ...runtimeConfig } : {};
   const heartbeat = isPlainRecord(normalizedRuntimeConfig.heartbeat)
     ? { ...normalizedRuntimeConfig.heartbeat }
     : {};
   if (parseFiniteNumberLike(heartbeat.maxConcurrentRuns) == null) {
-    heartbeat.maxConcurrentRuns = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
+    heartbeat.maxConcurrentRuns = defaultMaxConcurrentRunsForAdapter(adapterType);
   }
   normalizedRuntimeConfig.heartbeat = heartbeat;
   return normalizedRuntimeConfig;
@@ -423,7 +437,7 @@ export function agentService(db: Db) {
 
       const role = data.role ?? "general";
       const normalizedPermissions = normalizeAgentPermissions(data.permissions, role);
-      const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig);
+      const runtimeConfig = normalizeRuntimeConfigForNewAgent(data.runtimeConfig, data.adapterType);
       const created = await db
         .insert(agents)
         .values({ ...data, name: uniqueName, companyId, role, permissions: normalizedPermissions, runtimeConfig })

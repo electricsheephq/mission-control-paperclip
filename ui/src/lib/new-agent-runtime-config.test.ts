@@ -1,6 +1,9 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
+import {
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS,
+} from "@paperclipai/shared";
 import { buildNewAgentRuntimeConfig } from "./new-agent-runtime-config";
 
 describe("buildNewAgentRuntimeConfig", () => {
@@ -29,6 +32,14 @@ describe("buildNewAgentRuntimeConfig", () => {
         wakeOnDemand: true,
         cooldownSec: 10,
         maxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+      },
+    });
+  });
+
+  it("uses a conservative run limit for OpenClaw Gateway agents", () => {
+    expect(buildNewAgentRuntimeConfig({ adapterType: "openclaw_gateway" })).toMatchObject({
+      heartbeat: {
+        maxConcurrentRuns: OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS,
       },
     });
   });

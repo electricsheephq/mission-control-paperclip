@@ -7,6 +7,7 @@ import { and, asc, desc, eq, getTableColumns, gt, inArray, isNull, lt, lte, notI
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
   isEnvironmentDriverSupportedForAdapter,
@@ -147,7 +148,7 @@ import {
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
-import { withAgentStartLock } from "./agent-start-lock.js";
+import { withAgentStartLock, withStartLock } from "./agent-start-lock.js";
 import {
   redactCurrentUserText,
   redactCurrentUserValue,
@@ -1010,10 +1011,19 @@ export function compactRunLogChunk(chunk: string, maxChars = MAX_PERSISTED_LOG_C
   return `${normalized.slice(0, headChars)}${marker}${normalized.slice(normalized.length - tailChars)}`;
 }
 
-function normalizeMaxConcurrentRuns(value: unknown) {
-  const parsed = Math.floor(asNumber(value, HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT));
-  if (!Number.isFinite(parsed)) return HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
+function normalizeMaxConcurrentRuns(
+  value: unknown,
+  fallback = HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT,
+) {
+  const parsed = Math.floor(asNumber(value, fallback));
+  if (!Number.isFinite(parsed)) return fallback;
   return Math.max(HEARTBEAT_MAX_CONCURRENT_RUNS_MIN, Math.min(HEARTBEAT_MAX_CONCURRENT_RUNS_MAX, parsed));
+}
+
+function defaultMaxConcurrentRunsForAgent(agent: Pick<typeof agents.$inferSelect, "adapterType">) {
+  return agent.adapterType === "openclaw_gateway"
+    ? OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS
+    : HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
 }
 
 interface WakeupOptions {
@@ -5838,7 +5848,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       enabled: asBoolean(heartbeat.enabled, false),
       intervalSec: Math.max(0, asNumber(heartbeat.intervalSec, 0)),
       wakeOnDemand: asBoolean(heartbeat.wakeOnDemand ?? heartbeat.wakeOnAssignment ?? heartbeat.wakeOnOnDemand ?? heartbeat.wakeOnAutomation, true),
-      maxConcurrentRuns: normalizeMaxConcurrentRuns(heartbeat.maxConcurrentRuns),
+      maxConcurrentRuns: normalizeMaxConcurrentRuns(
+        heartbeat.maxConcurrentRuns,
+        defaultMaxConcurrentRunsForAgent(agent),
+      ),
+    };
+  }
+
+  function parseOpenClawGatewayConcurrencyPolicy(agent: typeof agents.$inferSelect) {
+    if (agent.adapterType !== "openclaw_gateway") return null;
+    const adapterConfig = parseObject(agent.adapterConfig);
+    const runtimeConfig = parseObject(agent.runtimeConfig);
+    const heartbeat = parseObject(runtimeConfig.heartbeat);
+    const url = readNonEmptyString(adapterConfig.url) ?? "";
+    const rawLimit = heartbeat.gatewayMaxConcurrentRuns ?? adapterConfig.gatewayMaxConcurrentRuns;
+    const maxConcurrentRuns = normalizeMaxConcurrentRuns(
+      rawLimit,
+      OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS,
+    );
+    return {
+      key: `openclaw_gateway:${agent.companyId}:${url || "missing-url"}`,
+      url,
+      maxConcurrentRuns,
     };
   }
 
@@ -5892,6 +5923,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")));
     return Number(count ?? 0);
+  }
+
+  async function countRunningRunsForOpenClawGateway(input: {
+    companyId: string;
+    url: string;
+  }) {
+    const [{ count }] = await db
+      .select({ count: sql<number>`count(*)` })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(and(
+        eq(heartbeatRuns.status, "running"),
+        eq(agents.companyId, input.companyId),
+        eq(agents.adapterType, "openclaw_gateway"),
+        sql`coalesce(${agents.adapterConfig} ->> 'url', '') = ${input.url}`,
+      ));
+    return Number(count ?? 0);
+  }
+
+  async function listQueuedOpenClawGatewayAgentIds(input: {
+    companyId: string;
+    url: string;
+  }) {
+    return db
+      .select({
+        agentId: agents.id,
+        oldestQueuedAt: sql<Date>`min(${heartbeatRuns.createdAt})`,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
+      .where(and(
+        eq(heartbeatRuns.status, "queued"),
+        eq(agents.companyId, input.companyId),
+        eq(agents.adapterType, "openclaw_gateway"),
+        sql`coalesce(${agents.adapterConfig} ->> 'url', '') = ${input.url}`,
+      ))
+      .groupBy(agents.id)
+      .orderBy(asc(sql`min(${heartbeatRuns.createdAt})`));
   }
 
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
@@ -6808,73 +6877,109 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return withAgentStartLock(agentId, async () => {
       const agent = await getAgent(agentId);
       if (!agent) return [];
-      if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
-        return [];
-      }
-      const policy = parseHeartbeatPolicy(agent);
-      const runningCount = await countRunningRunsForAgent(agentId);
-      const availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
-      if (availableSlots <= 0) return [];
+      const gatewayPolicy = parseOpenClawGatewayConcurrencyPolicy(agent);
 
-      const queuedRuns = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
-        .orderBy(asc(heartbeatRuns.createdAt));
-      if (queuedRuns.length === 0) return [];
+      const startForAgent = async () => {
+        if (agent.status === "paused" || agent.status === "terminated" || agent.status === "pending_approval") {
+          return [];
+        }
+        const policy = parseHeartbeatPolicy(agent);
+        const runningCount = await countRunningRunsForAgent(agentId);
+        let availableSlots = Math.max(0, policy.maxConcurrentRuns - runningCount);
+        if (gatewayPolicy) {
+          const gatewayRunningCount = await countRunningRunsForOpenClawGateway({
+            companyId: agent.companyId,
+            url: gatewayPolicy.url,
+          });
+          availableSlots = Math.min(
+            availableSlots,
+            Math.max(0, gatewayPolicy.maxConcurrentRuns - gatewayRunningCount),
+          );
+        }
+        if (availableSlots <= 0) return [];
 
-      const dependencyReadiness = await listQueuedRunDependencyReadiness(agent.companyId, queuedRuns);
-      const queuedIssueIds = [...new Set(
-        queuedRuns
-          .map((run) => readNonEmptyString(parseObject(run.contextSnapshot).issueId))
-          .filter((issueId): issueId is string => Boolean(issueId)),
-      )];
-      const issueRows = await db
-        .select({
-          id: issues.id,
-          status: issues.status,
-          priority: issues.priority,
-        })
-        .from(issues)
-        .where(
-          queuedIssueIds.length > 0
-            ? and(eq(issues.companyId, agent.companyId), inArray(issues.id, queuedIssueIds))
-            : sql`false`,
-        );
-      const issueById = new Map(issueRows.map((row) => [row.id, row]));
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
-        const leftIssueId = readNonEmptyString(parseObject(left.contextSnapshot).issueId);
-        const rightIssueId = readNonEmptyString(parseObject(right.contextSnapshot).issueId);
-        const leftReadiness = leftIssueId ? dependencyReadiness.get(leftIssueId) : null;
-        const rightReadiness = rightIssueId ? dependencyReadiness.get(rightIssueId) : null;
-        const leftReady = leftIssueId ? (leftReadiness?.isDependencyReady ?? true) : true;
-        const rightReady = rightIssueId ? (rightReadiness?.isDependencyReady ?? true) : true;
-        const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
-        const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
-        const leftRank = leftIssueId ? (leftReady ? (leftIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
-        const rightRank = rightIssueId ? (rightReady ? (rightIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
-        if (leftRank !== rightRank) return leftRank - rightRank;
-        const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
-        const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
-        if (leftPriorityRank !== rightPriorityRank) return leftPriorityRank - rightPriorityRank;
-        return left.createdAt.getTime() - right.createdAt.getTime();
-      });
+        const queuedRuns = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "queued")))
+          .orderBy(asc(heartbeatRuns.createdAt));
+        if (queuedRuns.length === 0) return [];
 
-      const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
-      for (const queuedRun of prioritizedRuns) {
-        if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun);
-        if (claimed) claimedRuns.push(claimed);
-      }
-      if (claimedRuns.length === 0) return [];
-
-      for (const claimedRun of claimedRuns) {
-        void executeRun(claimedRun.id).catch((err) => {
-          logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
+        const dependencyReadiness = await listQueuedRunDependencyReadiness(agent.companyId, queuedRuns);
+        const queuedIssueIds = [...new Set(
+          queuedRuns
+            .map((run) => readNonEmptyString(parseObject(run.contextSnapshot).issueId))
+            .filter((issueId): issueId is string => Boolean(issueId)),
+        )];
+        const issueRows = await db
+          .select({
+            id: issues.id,
+            status: issues.status,
+            priority: issues.priority,
+          })
+          .from(issues)
+          .where(
+            queuedIssueIds.length > 0
+              ? and(eq(issues.companyId, agent.companyId), inArray(issues.id, queuedIssueIds))
+              : sql`false`,
+          );
+        const issueById = new Map(issueRows.map((row) => [row.id, row]));
+        const prioritizedRuns = [...queuedRuns].sort((left, right) => {
+          const leftIssueId = readNonEmptyString(parseObject(left.contextSnapshot).issueId);
+          const rightIssueId = readNonEmptyString(parseObject(right.contextSnapshot).issueId);
+          const leftReadiness = leftIssueId ? dependencyReadiness.get(leftIssueId) : null;
+          const rightReadiness = rightIssueId ? dependencyReadiness.get(rightIssueId) : null;
+          const leftReady = leftIssueId ? (leftReadiness?.isDependencyReady ?? true) : true;
+          const rightReady = rightIssueId ? (rightReadiness?.isDependencyReady ?? true) : true;
+          const leftIssue = leftIssueId ? issueById.get(leftIssueId) : null;
+          const rightIssue = rightIssueId ? issueById.get(rightIssueId) : null;
+          const leftRank = leftIssueId ? (leftReady ? (leftIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
+          const rightRank = rightIssueId ? (rightReady ? (rightIssue?.status === "in_progress" ? 0 : 1) : 3) : 2;
+          if (leftRank !== rightRank) return leftRank - rightRank;
+          const leftPriorityRank = issueRunPriorityRank(leftIssue?.priority);
+          const rightPriorityRank = issueRunPriorityRank(rightIssue?.priority);
+          if (leftPriorityRank !== rightPriorityRank) return leftPriorityRank - rightPriorityRank;
+          return left.createdAt.getTime() - right.createdAt.getTime();
         });
+
+        const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+        for (const queuedRun of prioritizedRuns) {
+          if (claimedRuns.length >= availableSlots) break;
+          const claimed = await claimQueuedRun(queuedRun);
+          if (claimed) claimedRuns.push(claimed);
+        }
+        if (claimedRuns.length === 0) return [];
+
+        for (const claimedRun of claimedRuns) {
+          void executeRun(claimedRun.id).catch((err) => {
+            logger.error({ err, runId: claimedRun.id }, "queued heartbeat execution failed");
+          });
+        }
+        return claimedRuns;
+      };
+
+      if (gatewayPolicy) {
+        return withStartLock(
+          gatewayPolicy.key,
+          startForAgent,
+          { agentId, companyId: agent.companyId, adapterType: agent.adapterType },
+        );
       }
-      return claimedRuns;
+
+      return startForAgent();
     });
+  }
+
+  async function startNextQueuedRunsForSharedOpenClawGateway(agent: typeof agents.$inferSelect) {
+    const gatewayPolicy = parseOpenClawGatewayConcurrencyPolicy(agent);
+    if (!gatewayPolicy) return;
+    const queuedAgents = await listQueuedOpenClawGatewayAgentIds({
+      companyId: agent.companyId,
+      url: gatewayPolicy.url,
+    });
+    for (const queuedAgent of queuedAgents) {
+      await startNextQueuedRunForAgent(queuedAgent.agentId);
+    }
   }
 
   async function executeRun(runId: string) {
@@ -8211,6 +8316,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await releaseRuntimeServicesForRun(run.id).catch(() => undefined);
           activeRunExecutions.delete(run.id);
           await startNextQueuedRunForAgent(run.agentId);
+          const finishedAgent = await getAgent(run.agentId).catch(() => null);
+          if (finishedAgent) {
+            await startNextQueuedRunsForSharedOpenClawGateway(finishedAgent).catch(() => undefined);
+          }
         }
   }
 
@@ -9527,6 +9636,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runningProcesses.delete(run.id);
     await finalizeAgentStatus(run.agentId, "cancelled");
     await startNextQueuedRunForAgent(run.agentId);
+    if (agent) {
+      await startNextQueuedRunsForSharedOpenClawGateway(agent).catch(() => undefined);
+    }
     return cancelled;
   }
 
