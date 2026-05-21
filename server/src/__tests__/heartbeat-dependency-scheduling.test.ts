@@ -21,6 +21,7 @@ import {
   issueTreeHolds,
   issues,
 } from "@paperclipai/db";
+import { OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -584,6 +585,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
           heartbeat: {
             wakeOnDemand: true,
             maxConcurrentRuns: 20,
+            gatewayMaxConcurrentRuns: 1,
           },
         },
         permissions: {},
@@ -600,6 +602,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
           heartbeat: {
             wakeOnDemand: true,
             maxConcurrentRuns: 20,
+            gatewayMaxConcurrentRuns: 1,
           },
         },
         permissions: {},
@@ -686,6 +689,117 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       finishFirstRun();
     }
   }, 40_000);
+
+  it("defaults OpenClaw Gateway sharing to three canonical loopback runs", async () => {
+    const companyId = randomUUID();
+    const agentIds = Array.from({ length: OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS + 1 }, () => randomUUID());
+    const issueIds = agentIds.map(() => randomUUID());
+    const releaseFirstThree: Array<() => void> = [];
+    const firstThreeFinished = Array.from({ length: OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS }, () =>
+      new Promise<void>((resolve) => {
+        releaseFirstThree.push(resolve);
+      })
+    );
+
+    for (let index = 0; index < OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS; index += 1) {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        await firstThreeFinished[index];
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: `OpenClaw run ${index + 1} completed.`,
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    }
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values(agentIds.map((id, index) => ({
+      id,
+      companyId,
+      name: `OpenClaw${index + 1}`,
+      role: "engineer",
+      status: "active",
+      adapterType: "openclaw_gateway",
+      adapterConfig: {
+        url: index % 2 === 0 ? "ws://127.0.0.1:18790/" : "ws://localhost:18790",
+      },
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    })));
+    await db.insert(issues).values(issueIds.map((id, index) => ({
+      id,
+      companyId,
+      title: `OpenClaw assignment ${index + 1}`,
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentIds[index],
+    })));
+
+    try {
+      const wakes = [];
+      for (let index = 0; index < agentIds.length; index += 1) {
+        const wake = await heartbeat.wakeup(agentIds[index], {
+          source: "assignment",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+          payload: { issueId: issueIds[index] },
+          contextSnapshot: { issueId: issueIds[index], wakeReason: "issue_assigned" },
+        });
+        expect(wake).not.toBeNull();
+        wakes.push(wake!);
+        await db.insert(issueComments).values({
+          companyId,
+          issueId: issueIds[index],
+          authorAgentId: agentIds[index],
+          authorType: "agent",
+          createdByRunId: wake!.id,
+          body: `OpenClaw run ${index + 1} completed.`,
+        });
+      }
+
+      const firstThreeStarted = await waitForCondition(
+        async () => mockAdapterExecute.mock.calls.length === OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS,
+        30_000,
+      );
+      expect(firstThreeStarted).toBe(true);
+
+      const fourthRunWhileFirstThreeRunning = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, wakes[OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS].id))
+        .then((rows) => rows[0] ?? null);
+      expect(fourthRunWhileFirstThreeRunning?.status).toBe("queued");
+
+      for (const release of releaseFirstThree) release();
+
+      const fourthRunSucceeded = await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, wakes[OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS].id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
+      }, 30_000);
+      expect(fourthRunSucceeded).toBe(true);
+      expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(agentIds.length);
+    } finally {
+      for (const release of releaseFirstThree) release();
+    }
+  }, 50_000);
 
   it("cancels stale queued runs when issue blockers are still unresolved", async () => {
     const companyId = randomUUID();

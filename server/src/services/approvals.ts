@@ -7,15 +7,19 @@ import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { openClawGatewayProvisioningService } from "./openclaw-gateway-provisioning.js";
+import { logActivity } from "./activity-log.js";
 
 export function approvalService(db: Db) {
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
   const instanceSettings = instanceSettingsService(db);
+  const openClawProvisioning = openClawGatewayProvisioningService(db);
   const canResolveStatuses = new Set(["pending", "revision_requested"]);
   const resolvableStatuses = Array.from(canResolveStatuses);
   type ApprovalRecord = typeof approvals.$inferSelect;
   type ResolutionResult = { approval: ApprovalRecord; applied: boolean };
+  type AgentRecord = NonNullable<Awaited<ReturnType<typeof agentsSvc.getById>>>;
 
   function redactApprovalComment<T extends { body: string }>(comment: T, censorUsernameInLogs: boolean): T {
     return {
@@ -32,6 +36,34 @@ export function approvalService(db: Db) {
       .then((rows) => rows[0] ?? null);
     if (!existing) throw notFound("Approval not found");
     return existing;
+  }
+
+  async function ensureOpenClawProvisionedOrPause(agent: AgentRecord, decidedByUserId: string): Promise<void> {
+    try {
+      await openClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow(agent);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      const paused = await agentsSvc.update(agent.id, {
+        status: "paused",
+        pauseReason: `OpenClaw provisioning failed: ${detail}`,
+      }).catch(() => null);
+      if (paused) {
+        await logActivity(db, {
+          companyId: agent.companyId,
+          actorType: "user",
+          actorId: decidedByUserId,
+          action: "agent.paused",
+          entityType: "agent",
+          entityId: agent.id,
+          details: {
+            reason: "openclaw_provisioning_failed",
+            error: detail,
+            source: "approval_service",
+          },
+        }).catch(() => undefined);
+      }
+      throw err;
+    }
   }
 
   async function resolveApproval(
@@ -113,7 +145,10 @@ export function approvalService(db: Db) {
         const payload = updated.payload as Record<string, unknown>;
         const payloadAgentId = typeof payload.agentId === "string" ? payload.agentId : null;
         if (payloadAgentId) {
-          await agentsSvc.activatePendingApproval(payloadAgentId);
+          const activated = await agentsSvc.activatePendingApproval(payloadAgentId);
+          if (activated?.activated) {
+            await ensureOpenClawProvisionedOrPause(activated.agent, decidedByUserId);
+          }
           hireApprovedAgentId = payloadAgentId;
         } else {
           const created = await agentsSvc.create(updated.companyId, {
@@ -138,6 +173,7 @@ export function approvalService(db: Db) {
             permissions: undefined,
             lastHeartbeatAt: null,
           });
+          await ensureOpenClawProvisionedOrPause(created, decidedByUserId);
           hireApprovedAgentId = created?.id ?? null;
         }
         if (hireApprovedAgentId) {

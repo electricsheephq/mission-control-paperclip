@@ -1,9 +1,6 @@
 import { Router, type Request, type Response } from "express";
-import { execFile as execFileCb } from "node:child_process";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable, companies, heartbeatRuns, issues as issuesTable } from "@paperclipai/db";
 import { and, desc, eq, inArray, not, sql } from "drizzle-orm";
@@ -12,6 +9,7 @@ import {
   agentMineInboxQuerySchema,
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS,
+  OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS,
   createAgentKeySchema,
   createAgentHireSchema,
   createAgentSchema,
@@ -103,8 +101,7 @@ import {
 import { getTelemetryClient } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
-
-const execFile = promisify(execFileCb);
+import { openClawGatewayProvisioningService } from "../services/openclaw-gateway-provisioning.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
@@ -167,6 +164,7 @@ export function agentRoutes(
 
   const router = Router();
   const svc = agentService(db);
+  const openClawProvisioning = openClawGatewayProvisioningService(db);
   const access = accessService(db);
   const approvalsSvc = approvalService(db);
   const budgets = budgetService(db);
@@ -185,6 +183,37 @@ export function agentRoutes(
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  async function pauseAgentAfterOpenClawProvisioningFailure(input: {
+    agent: { id: string; companyId: string };
+    actor: {
+      actorType: "agent" | "user" | "system" | "plugin";
+      actorId: string;
+      agentId?: string | null;
+      runId?: string | null;
+    };
+    detail: string;
+  }) {
+    const paused = await svc.update(input.agent.id, {
+      status: "paused",
+      pauseReason: `OpenClaw provisioning failed: ${input.detail}`,
+    }).catch(() => null);
+    if (!paused) return;
+    await logActivity(db, {
+      companyId: input.agent.companyId,
+      actorType: input.actor.actorType,
+      actorId: input.actor.actorId,
+      agentId: input.actor.agentId ?? null,
+      runId: input.actor.runId ?? null,
+      action: "agent.paused",
+      entityType: "agent",
+      entityId: input.agent.id,
+      details: {
+        reason: "openclaw_provisioning_failed",
+        error: input.detail,
+      },
+    }).catch(() => undefined);
+  }
 
   async function assertAgentEnvironmentSelection(
     companyId: string,
@@ -947,210 +976,6 @@ export function agentRoutes(
     return next;
   }
 
-  function isLocalOpenClawGatewayUrl(value: unknown): boolean {
-    const raw = asNonEmptyString(value);
-    if (!raw) return false;
-    try {
-      const parsed = new URL(raw);
-      if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") return false;
-      return parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost" || parsed.hostname === "::1";
-    } catch {
-      return false;
-    }
-  }
-
-  function normalizeOpenClawAgentId(value: string): string {
-    let normalized = "";
-    for (const char of value.trim().toLowerCase()) {
-      const isAsciiLetter = char >= "a" && char <= "z";
-      const isDigit = char >= "0" && char <= "9";
-      if (isAsciiLetter || isDigit) {
-        if (normalized.length >= 48) break;
-        normalized += char;
-        continue;
-      }
-      if (normalized.length > 0 && normalized.length < 48 && !normalized.endsWith("-")) {
-        normalized += "-";
-      }
-    }
-    while (normalized.endsWith("-")) {
-      normalized = normalized.slice(0, -1);
-    }
-    return normalized || `agent-${randomUUID().slice(0, 8)}`;
-  }
-
-  function openClawWorkspacePathForAgent(agentId: string): string {
-    return `~/.openclaw/workspace-${agentId}`;
-  }
-
-  function openClawClaimPathForAgent(agentId: string): string {
-    return `${openClawWorkspacePathForAgent(agentId)}/paperclip-claimed-api-key.json`;
-  }
-
-  function expandOpenClawHome(rawPath: string): string {
-    const home = process.env.PAPERCLIP_OPENCLAW_HOME || "/root";
-    if (rawPath === "~") return home;
-    if (rawPath.startsWith("~/")) return path.join(home, rawPath.slice(2));
-    return rawPath;
-  }
-
-  async function listCompanyOpenClawAgentIds(companyId: string): Promise<Set<string>> {
-    const rows = await db
-      .select({ adapterConfig: agentsTable.adapterConfig })
-      .from(agentsTable)
-      .where(and(eq(agentsTable.companyId, companyId), eq(agentsTable.adapterType, "openclaw_gateway")));
-    const used = new Set<string>();
-    for (const row of rows) {
-      const agentId = asNonEmptyString(asRecord(row.adapterConfig)?.agentId);
-      if (agentId) used.add(agentId);
-    }
-    return used;
-  }
-
-  async function deriveCompanyOpenClawAgentId(companyId: string, requestedName: string): Promise<string> {
-    const used = await listCompanyOpenClawAgentIds(companyId);
-    const base = normalizeOpenClawAgentId(requestedName);
-    if (!used.has(base) && base !== "main") return base;
-    for (let index = 2; index < 100; index += 1) {
-      const candidate = `${base}-${index}`.slice(0, 56);
-      if (!used.has(candidate) && candidate !== "main") return candidate;
-    }
-    return `${base}-${randomUUID().slice(0, 8)}`.slice(0, 56);
-  }
-
-  async function applySameGatewayOpenClawProvisioningDefaults(input: {
-    companyId: string;
-    requestedName: string;
-    adapterType: string;
-    adapterConfig: Record<string, unknown>;
-    actorAgent: NonNullable<Awaited<ReturnType<typeof svc.getById>>> | null;
-  }): Promise<Record<string, unknown>> {
-    if (
-      input.adapterType !== "openclaw_gateway" ||
-      !input.actorAgent ||
-      input.actorAgent.adapterType !== "openclaw_gateway" ||
-      !isLocalOpenClawGatewayUrl(input.adapterConfig.url)
-    ) {
-      return input.adapterConfig;
-    }
-
-    const next = { ...input.adapterConfig };
-    let agentId = asNonEmptyString(next.agentId);
-    if (!agentId) {
-      agentId = await deriveCompanyOpenClawAgentId(input.companyId, input.requestedName);
-      next.agentId = agentId;
-    }
-    if (agentId !== "main" && !asNonEmptyString(next.claimedApiKeyPath)) {
-      next.claimedApiKeyPath = openClawClaimPathForAgent(agentId);
-    }
-    return next;
-  }
-
-  function shouldAutoProvisionOpenClawGatewayChild(adapterConfig: Record<string, unknown>): boolean {
-    if (process.env.NODE_ENV === "test") return false;
-    if (process.env.PAPERCLIP_OPENCLAW_GATEWAY_AUTO_PROVISION === "0") return false;
-    if (parseBooleanLike(adapterConfig.autoProvisionAgent) === false) return false;
-    return true;
-  }
-
-  async function listLocalOpenClawAgentIds(): Promise<Set<string>> {
-    const { stdout } = await execFile("openclaw", ["agents", "list", "--json"], { timeout: 10_000 });
-    const parsed = JSON.parse(stdout);
-    const agentsList = Array.isArray(parsed) ? parsed : parsed?.agents;
-    const ids = new Set<string>();
-    if (Array.isArray(agentsList)) {
-      for (const agent of agentsList) {
-        const id = asNonEmptyString(asRecord(agent)?.id);
-        if (id) ids.add(id);
-      }
-    }
-    return ids;
-  }
-
-  async function ensureLocalOpenClawAgent(adapterConfig: Record<string, unknown>): Promise<void> {
-    if (!shouldAutoProvisionOpenClawGatewayChild(adapterConfig)) return;
-    if (!isLocalOpenClawGatewayUrl(adapterConfig.url)) return;
-    const agentId = asNonEmptyString(adapterConfig.agentId);
-    if (!agentId || agentId === "main") return;
-    const ids = await listLocalOpenClawAgentIds();
-    if (ids.has(agentId)) return;
-
-    const workspacePath = asNonEmptyString(adapterConfig.openclawWorkspacePath)
-      ?? openClawWorkspacePathForAgent(agentId);
-    const model = asNonEmptyString(adapterConfig.openclawModel)
-      ?? process.env.PAPERCLIP_OPENCLAW_CHILD_MODEL
-      ?? "openai/gpt-5.5";
-    await execFile(
-      "openclaw",
-      [
-        "agents",
-        "add",
-        agentId,
-        "--workspace",
-        expandOpenClawHome(workspacePath),
-        "--model",
-        model,
-        "--non-interactive",
-        "--json",
-      ],
-      { timeout: 60_000 },
-    );
-  }
-
-  async function ensureLocalOpenClawAgentOrThrow(adapterConfig: Record<string, unknown>): Promise<void> {
-    try {
-      await ensureLocalOpenClawAgent(adapterConfig);
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      throw unprocessable(`openclaw_gateway_child_provisioning_failed: ${detail}`);
-    }
-  }
-
-  async function ensureOpenClawPaperclipClaimFile(
-    agent: NonNullable<Awaited<ReturnType<typeof svc.create>>>,
-  ): Promise<void> {
-    const adapterConfig = asRecord(agent.adapterConfig) ?? {};
-    if (!shouldAutoProvisionOpenClawGatewayChild(adapterConfig)) return;
-    if (!isLocalOpenClawGatewayUrl(adapterConfig.url)) return;
-    const openClawAgentId = asNonEmptyString(adapterConfig.agentId);
-    const claimPath = asNonEmptyString(adapterConfig.claimedApiKeyPath);
-    if (!openClawAgentId || openClawAgentId === "main" || !claimPath) return;
-
-    const claimFile = expandOpenClawHome(claimPath);
-    try {
-      const existing = JSON.parse(await fs.readFile(claimFile, "utf8"));
-      if (existing?.agentId === agent.id && typeof existing?.token === "string") return;
-      throw new Error(`claim file already exists for a different agent at ${claimPath}`);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    }
-
-    const key = await svc.createApiKey(agent.id, `OpenClaw ${openClawAgentId} workspace claim`);
-    await fs.mkdir(path.dirname(claimFile), { recursive: true });
-    await fs.writeFile(
-      claimFile,
-      JSON.stringify({
-        agentId: agent.id,
-        keyId: key.id,
-        token: key.token,
-        createdAt: key.createdAt.toISOString(),
-      }, null, 2) + "\n",
-      { mode: 0o600 },
-    );
-    await fs.chmod(claimFile, 0o600);
-  }
-
-  async function ensureOpenClawPaperclipClaimFileOrThrow(
-    agent: NonNullable<Awaited<ReturnType<typeof svc.create>>>,
-  ): Promise<void> {
-    try {
-      await ensureOpenClawPaperclipClaimFile(agent);
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      throw unprocessable(`openclaw_gateway_child_claim_file_failed: ${detail}`);
-    }
-  }
-
   function preserveInstructionsBundleConfig(
     existingAdapterConfig: Record<string, unknown>,
     nextAdapterConfig: Record<string, unknown>,
@@ -1208,6 +1033,12 @@ export function agentRoutes(
       : AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
   }
 
+  function defaultSharedOpenClawGatewayMaxConcurrentRuns() {
+    const configured = parseNumberLike(process.env.PAPERCLIP_OPENCLAW_SHARED_GATEWAY_MAX_CONCURRENT_RUNS);
+    if (configured == null) return OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS;
+    return Math.max(1, Math.trunc(configured));
+  }
+
   function normalizeNewAgentRuntimeConfig(
     adapterType: string,
     runtimeConfig: unknown,
@@ -1222,6 +1053,12 @@ export function agentRoutes(
     }
     if (parseNumberLike(heartbeat.maxConcurrentRuns) == null) {
       heartbeat.maxConcurrentRuns = defaultMaxConcurrentRunsForAdapter(adapterType);
+    }
+    if (
+      adapterType === "openclaw_gateway" &&
+      parseNumberLike(heartbeat.gatewayMaxConcurrentRuns) == null
+    ) {
+      heartbeat.gatewayMaxConcurrentRuns = defaultSharedOpenClawGatewayMaxConcurrentRuns();
     }
 
     normalizedRuntimeConfig.heartbeat = heartbeat;
@@ -2319,7 +2156,7 @@ export function agentRoutes(
       hireInput.adapterType,
       inheritedHireAdapterConfig,
     );
-    requestedAdapterConfig = await applySameGatewayOpenClawProvisioningDefaults({
+    requestedAdapterConfig = await openClawProvisioning.applySameGatewayOpenClawProvisioningDefaults({
       companyId,
       requestedName: hireInput.name,
       adapterType: hireInput.adapterType,
@@ -2359,10 +2196,11 @@ export function agentRoutes(
       return;
     }
 
+    const actor = getActorInfo(req);
     const requiresApproval = company.requireBoardApprovalForNewAgents;
     const status = requiresApproval ? "pending_approval" : "idle";
     if (status === "idle") {
-      await ensureLocalOpenClawAgentOrThrow(normalizedAdapterConfig);
+      await openClawProvisioning.ensureOpenClawAgentForAdapterConfigOrThrow(normalizedAdapterConfig);
     }
     const createdAgent = await svc.create(companyId, {
       ...normalizedHireInput,
@@ -2372,11 +2210,16 @@ export function agentRoutes(
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
     if (status === "idle") {
-      await ensureOpenClawPaperclipClaimFileOrThrow(agent);
+      try {
+        await openClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow(agent);
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        await pauseAgentAfterOpenClawProvisioningFailure({ agent, actor, detail });
+        throw err;
+      }
     }
 
     let approval: Awaited<ReturnType<typeof approvalsSvc.getById>> | null = null;
-    const actor = getActorInfo(req);
 
     if (requiresApproval) {
       const requestedAdapterType = normalizedHireInput.adapterType ?? agent.adapterType;
@@ -2523,7 +2366,7 @@ export function agentRoutes(
       createInput.adapterType,
       inheritedCreateAdapterConfig,
     );
-    requestedAdapterConfig = await applySameGatewayOpenClawProvisioningDefaults({
+    requestedAdapterConfig = await openClawProvisioning.applySameGatewayOpenClawProvisioningDefaults({
       companyId,
       requestedName: createInput.name,
       adapterType: createInput.adapterType,
@@ -2553,7 +2396,7 @@ export function agentRoutes(
       allowedSandboxProviders: allowedSandboxProvidersForAgent(createInput.adapterType),
     });
 
-    await ensureLocalOpenClawAgentOrThrow(normalizedAdapterConfig);
+    await openClawProvisioning.ensureOpenClawAgentForAdapterConfigOrThrow(normalizedAdapterConfig);
     const createdAgent = await svc.create(companyId, {
       ...createInput,
       adapterConfig: normalizedAdapterConfig,
@@ -2563,7 +2406,14 @@ export function agentRoutes(
       lastHeartbeatAt: null,
     });
     const agent = await materializeDefaultInstructionsBundleForNewAgent(createdAgent, instructionsBundle);
-    await ensureOpenClawPaperclipClaimFileOrThrow(agent);
+    const actor = getActorInfo(req);
+    try {
+      await openClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow(agent);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      await pauseAgentAfterOpenClawProvisioningFailure({ agent, actor, detail });
+      throw err;
+    }
     const agentEnv = asRecord(agent.adapterConfig)?.env;
     if (agentEnv) {
       await secretsSvc.syncEnvBindingsForTarget?.(
@@ -2572,8 +2422,6 @@ export function agentRoutes(
         agentEnv,
       );
     }
-
-    const actor = getActorInfo(req);
     await logActivity(db, {
       companyId,
       actorType: actor.actorType,
@@ -3143,6 +2991,20 @@ export function agentRoutes(
       return;
     }
     const { agent } = approval;
+    try {
+      await openClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow(agent);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      await pauseAgentAfterOpenClawProvisioningFailure({
+        agent,
+        actor: {
+          actorType: "user",
+          actorId: req.actor.userId ?? "board",
+        },
+        detail,
+      });
+      throw err;
+    }
 
     await logActivity(db, {
       companyId: agent.companyId,
