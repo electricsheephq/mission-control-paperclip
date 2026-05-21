@@ -960,13 +960,22 @@ export function agentRoutes(
   }
 
   function normalizeOpenClawAgentId(value: string): string {
-    const normalized = value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 48)
-      .replace(/-+$/g, "");
+    let normalized = "";
+    for (const char of value.trim().toLowerCase()) {
+      const isAsciiLetter = char >= "a" && char <= "z";
+      const isDigit = char >= "0" && char <= "9";
+      if (isAsciiLetter || isDigit) {
+        if (normalized.length >= 48) break;
+        normalized += char;
+        continue;
+      }
+      if (normalized.length > 0 && normalized.length < 48 && !normalized.endsWith("-")) {
+        normalized += "-";
+      }
+    }
+    while (normalized.endsWith("-")) {
+      normalized = normalized.slice(0, -1);
+    }
     return normalized || `agent-${randomUUID().slice(0, 8)}`;
   }
 

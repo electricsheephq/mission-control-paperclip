@@ -987,6 +987,43 @@ describe.sequential("agent permission routes", () => {
     });
   });
 
+  it("derives same-gateway OpenClaw child agent ids without regex-heavy normalization", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterType: "openclaw_gateway",
+      adapterConfig: {
+        url: "ws://127.0.0.1:18790",
+        headers: { "x-openclaw-token": "parent-gateway-token-1234567890" },
+      },
+      permissions: { canCreateAgents: true },
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agents`)
+      .send({
+        name: "  CMO---Growth !!!  ",
+        role: "cmo",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls[0]?.[1] as { adapterConfig?: Record<string, unknown> };
+    expect(createInput.adapterConfig).toMatchObject({
+      agentId: "cmo-growth",
+      claimedApiKeyPath: "~/.openclaw/workspace-cmo-growth/paperclip-claimed-api-key.json",
+    });
+  });
+
   it("preserves explicit OpenClaw child credentials over same-gateway inheritance", async () => {
     mockAccessService.hasPermission.mockResolvedValue(true);
     mockAgentService.getById.mockResolvedValue({
