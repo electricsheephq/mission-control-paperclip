@@ -8,6 +8,7 @@ import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS,
+  OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
   MODEL_PROFILE_KEYS,
   isEnvironmentDriverSupportedForAdapter,
@@ -116,6 +117,7 @@ import {
 import { executionWorkspaceService, mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import { isProcessGroupAlive, terminateLocalService } from "./local-service-supervisor.js";
+import { canonicalizeOpenClawGatewayUrl } from "./openclaw-gateway-provisioning.js";
 import {
   buildExecutionWorkspaceAdapterConfig,
   gateProjectExecutionWorkspacePolicy,
@@ -1024,6 +1026,13 @@ function defaultMaxConcurrentRunsForAgent(agent: Pick<typeof agents.$inferSelect
   return agent.adapterType === "openclaw_gateway"
     ? OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS
     : HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT;
+}
+
+function defaultSharedOpenClawGatewayMaxConcurrentRuns() {
+  return normalizeMaxConcurrentRuns(
+    process.env.PAPERCLIP_OPENCLAW_SHARED_GATEWAY_MAX_CONCURRENT_RUNS,
+    OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS,
+  );
 }
 
 interface WakeupOptions {
@@ -5860,11 +5869,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const adapterConfig = parseObject(agent.adapterConfig);
     const runtimeConfig = parseObject(agent.runtimeConfig);
     const heartbeat = parseObject(runtimeConfig.heartbeat);
-    const url = readNonEmptyString(adapterConfig.url) ?? "";
+    const url = canonicalizeOpenClawGatewayUrl(adapterConfig.url);
     const rawLimit = heartbeat.gatewayMaxConcurrentRuns ?? adapterConfig.gatewayMaxConcurrentRuns;
     const maxConcurrentRuns = normalizeMaxConcurrentRuns(
       rawLimit,
-      OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS,
+      defaultSharedOpenClawGatewayMaxConcurrentRuns(),
     );
     return {
       key: `openclaw_gateway:${agent.companyId}:${url || "missing-url"}`,
@@ -5929,27 +5938,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     companyId: string;
     url: string;
   }) {
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)` })
+    const rows = await db
+      .select({ adapterConfig: agents.adapterConfig })
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
       .where(and(
         eq(heartbeatRuns.status, "running"),
         eq(agents.companyId, input.companyId),
         eq(agents.adapterType, "openclaw_gateway"),
-        sql`coalesce(${agents.adapterConfig} ->> 'url', '') = ${input.url}`,
       ));
-    return Number(count ?? 0);
+    return rows.filter((row) =>
+      canonicalizeOpenClawGatewayUrl(parseObject(row.adapterConfig).url) === input.url,
+    ).length;
   }
 
   async function listQueuedOpenClawGatewayAgentIds(input: {
     companyId: string;
     url: string;
   }) {
-    return db
+    const rows = await db
       .select({
         agentId: agents.id,
-        oldestQueuedAt: sql<Date>`min(${heartbeatRuns.createdAt})`,
+        queuedAt: heartbeatRuns.createdAt,
+        adapterConfig: agents.adapterConfig,
       })
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
@@ -5957,10 +5968,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         eq(heartbeatRuns.status, "queued"),
         eq(agents.companyId, input.companyId),
         eq(agents.adapterType, "openclaw_gateway"),
-        sql`coalesce(${agents.adapterConfig} ->> 'url', '') = ${input.url}`,
-      ))
-      .groupBy(agents.id)
-      .orderBy(asc(sql`min(${heartbeatRuns.createdAt})`));
+      ));
+
+    const oldestQueuedAtByAgent = new Map<string, Date>();
+    for (const row of rows) {
+      if (canonicalizeOpenClawGatewayUrl(parseObject(row.adapterConfig).url) !== input.url) continue;
+      const existing = oldestQueuedAtByAgent.get(row.agentId);
+      if (!existing || row.queuedAt < existing) {
+        oldestQueuedAtByAgent.set(row.agentId, row.queuedAt);
+      }
+    }
+    return Array.from(oldestQueuedAtByAgent.entries())
+      .map(([agentId, oldestQueuedAt]) => ({ agentId, oldestQueuedAt }))
+      .sort((left, right) => left.oldestQueuedAt.getTime() - right.oldestQueuedAt.getTime());
   }
 
   async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect) {
@@ -9685,6 +9705,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await releaseIssueExecutionAndPromote(run);
     }
 
+    if (agent) {
+      await startNextQueuedRunsForSharedOpenClawGateway(agent).catch(() => undefined);
+    }
     return runs.length;
   }
 

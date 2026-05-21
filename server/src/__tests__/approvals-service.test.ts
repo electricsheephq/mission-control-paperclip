@@ -4,13 +4,21 @@ import { approvalService } from "../services/approvals.ts";
 const mockAgentService = vi.hoisted(() => ({
   activatePendingApproval: vi.fn(),
   create: vi.fn(),
+  update: vi.fn(),
   terminate: vi.fn(),
 }));
 
 const mockNotifyHireApproved = vi.hoisted(() => vi.fn());
+const mockOpenClawProvisioning = vi.hoisted(() => ({
+  ensureOpenClawProvisionedForAgentOrThrow: vi.fn(),
+}));
 
 vi.mock("../services/agents.js", () => ({
   agentService: vi.fn(() => mockAgentService),
+}));
+
+vi.mock("../services/openclaw-gateway-provisioning.js", () => ({
+  openClawGatewayProvisioningService: vi.fn(() => mockOpenClawProvisioning),
 }));
 
 vi.mock("../services/hire-hook.js", () => ({
@@ -58,10 +66,19 @@ function createDbStub(selectResults: ApprovalRecord[][], updateResults: Approval
 describe("approvalService resolution idempotency", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockAgentService.activatePendingApproval.mockResolvedValue(undefined);
+    mockAgentService.activatePendingApproval.mockResolvedValue({
+      agent: {
+        id: "agent-1",
+        adapterType: "openclaw_gateway",
+        adapterConfig: { agentId: "cmo" },
+      },
+      activated: true,
+    });
     mockAgentService.create.mockResolvedValue({ id: "agent-1" });
+    mockAgentService.update.mockResolvedValue({ id: "agent-1", status: "paused" });
     mockAgentService.terminate.mockResolvedValue(undefined);
     mockNotifyHireApproved.mockResolvedValue(undefined);
+    mockOpenClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow.mockResolvedValue(undefined);
   });
 
   it("treats repeated approve retries as no-ops after another worker resolves the approval", async () => {
@@ -102,6 +119,37 @@ describe("approvalService resolution idempotency", () => {
 
     expect(result.applied).toBe(true);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
+    expect(mockOpenClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "agent-1" }),
+    );
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
+  });
+
+  it("pauses an activated OpenClaw hire and surfaces the error when provisioning fails", async () => {
+    const approved = createApproval("approved");
+    const dbStub = createDbStub([[createApproval("pending")]], [approved]);
+    mockAgentService.activatePendingApproval.mockResolvedValue({
+      agent: {
+        id: "agent-1",
+        adapterType: "openclaw_gateway",
+        adapterConfig: { agentId: "cmo" },
+      },
+      activated: true,
+    });
+    mockOpenClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow.mockRejectedValue(
+      new Error("provisioner unavailable"),
+    );
+
+    const svc = approvalService(dbStub.db as any);
+    await expect(svc.approve("approval-1", "board", "ship it")).rejects.toThrow("provisioner unavailable");
+
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "agent-1",
+      expect.objectContaining({
+        status: "paused",
+        pauseReason: expect.stringContaining("OpenClaw provisioning failed"),
+      }),
+    );
+    expect(mockNotifyHireApproved).not.toHaveBeenCalled();
   });
 });

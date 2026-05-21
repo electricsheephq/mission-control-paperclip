@@ -2,7 +2,10 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
-import { OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
+import {
+  OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS,
+  OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS,
+} from "@paperclipai/shared";
 
 vi.mock("acpx/runtime", () => ({
   createAcpRuntime: vi.fn(),
@@ -108,6 +111,31 @@ const mockEnvironmentService = vi.hoisted(() => ({
 const mockInstanceSettingsService = vi.hoisted(() => ({
   getGeneral: vi.fn(),
 }));
+const mockOpenClawProvisioning = vi.hoisted(() => ({
+  applySameGatewayOpenClawProvisioningDefaults: vi.fn(),
+  ensureOpenClawAgentForAdapterConfigOrThrow: vi.fn(),
+  ensureOpenClawProvisionedForAgentOrThrow: vi.fn(),
+}));
+
+function normalizeOpenClawAgentIdForTest(value: string): string {
+  let normalized = "";
+  for (const char of value.trim().toLowerCase()) {
+    const isAsciiLetter = char >= "a" && char <= "z";
+    const isDigit = char >= "0" && char <= "9";
+    if (isAsciiLetter || isDigit) {
+      if (normalized.length >= 48) break;
+      normalized += char;
+      continue;
+    }
+    if (normalized.length > 0 && normalized.length < 48 && !normalized.endsWith("-")) {
+      normalized += "-";
+    }
+  }
+  while (normalized.endsWith("-")) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized || "agent-test";
+}
 
 function registerModuleMocks() {
   vi.doMock("@paperclipai/adapter-opencode-local/server", async () => {
@@ -182,6 +210,10 @@ function registerModuleMocks() {
 
   vi.doMock("../services/instance-settings.js", () => ({
     instanceSettingsService: () => mockInstanceSettingsService,
+  }));
+
+  vi.doMock("../services/openclaw-gateway-provisioning.js", () => ({
+    openClawGatewayProvisioningService: () => mockOpenClawProvisioning,
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -284,6 +316,7 @@ describe.sequential("agent permission routes", () => {
     vi.doUnmock("../services/instance-settings.js");
     vi.doUnmock("../services/issue-approvals.js");
     vi.doUnmock("../services/issues.js");
+    vi.doUnmock("../services/openclaw-gateway-provisioning.js");
     vi.doUnmock("../services/secrets.js");
     vi.doUnmock("../services/environments.js");
     vi.doUnmock("../services/workspace-operations.js");
@@ -328,6 +361,9 @@ describe.sequential("agent permission routes", () => {
     mockSyncInstructionsBundleConfigFromFilePath.mockReset();
     mockInstanceSettingsService.getGeneral.mockReset();
     mockEnvironmentService.getById.mockReset();
+    mockOpenClawProvisioning.applySameGatewayOpenClawProvisioningDefaults.mockReset();
+    mockOpenClawProvisioning.ensureOpenClawAgentForAdapterConfigOrThrow.mockReset();
+    mockOpenClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow.mockReset();
     mockEnsureOpenCodeModelConfiguredAndAvailable.mockReset();
     mockSyncInstructionsBundleConfigFromFilePath.mockImplementation((_agent, config) => config);
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
@@ -382,6 +418,30 @@ describe.sequential("agent permission routes", () => {
     mockInstanceSettingsService.getGeneral.mockResolvedValue({
       censorUsernameInLogs: false,
     });
+    mockOpenClawProvisioning.applySameGatewayOpenClawProvisioningDefaults.mockImplementation(async (input) => {
+      if (
+        input.adapterType !== "openclaw_gateway" ||
+        !input.actorAgent ||
+        input.actorAgent.adapterType !== "openclaw_gateway" ||
+        input.adapterConfig.url !== "ws://127.0.0.1:18790"
+      ) {
+        return input.adapterConfig;
+      }
+      const next = { ...input.adapterConfig };
+      const agentId = typeof next.agentId === "string" && next.agentId.trim()
+        ? next.agentId.trim()
+        : normalizeOpenClawAgentIdForTest(input.requestedName);
+      next.agentId = agentId;
+      if (agentId !== "main" && typeof next.openclawWorkspacePath !== "string") {
+        next.openclawWorkspacePath = `~/.openclaw/workspace-${agentId}`;
+      }
+      if (agentId !== "main" && typeof next.claimedApiKeyPath !== "string") {
+        next.claimedApiKeyPath = `~/.openclaw/workspace-${agentId}/paperclip-claimed-api-key.json`;
+      }
+      return next;
+    });
+    mockOpenClawProvisioning.ensureOpenClawAgentForAdapterConfigOrThrow.mockResolvedValue(undefined);
+    mockOpenClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
   });
 
@@ -975,6 +1035,7 @@ describe.sequential("agent permission routes", () => {
       scopes: ["operator.admin"],
       sessionKeyStrategy: "issue",
       agentId: "cmo",
+      openclawWorkspacePath: "~/.openclaw/workspace-cmo",
       claimedApiKeyPath: "~/.openclaw/workspace-cmo/paperclip-claimed-api-key.json",
     });
     expect(createInput.adapterConfig?.headers).not.toHaveProperty("x-extra-header");
@@ -983,8 +1044,17 @@ describe.sequential("agent permission routes", () => {
     expect(createInput.adapterConfig).not.toHaveProperty("payloadTemplate");
     expect(createInput.adapterConfig).not.toHaveProperty("sessionKey");
     expect(createInput.runtimeConfig).toMatchObject({
-      heartbeat: { maxConcurrentRuns: OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS },
+      heartbeat: {
+        maxConcurrentRuns: OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS,
+        gatewayMaxConcurrentRuns: OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS,
+      },
     });
+    expect(mockOpenClawProvisioning.ensureOpenClawAgentForAdapterConfigOrThrow).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "cmo" }),
+    );
+    expect(mockOpenClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow).toHaveBeenCalledWith(
+      expect.objectContaining({ id: agentId }),
+    );
   });
 
   it("derives same-gateway OpenClaw child agent ids without regex-heavy normalization", async () => {
@@ -1319,6 +1389,7 @@ describe.sequential("agent permission routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith(agentId);
+    expect(mockOpenClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow).toHaveBeenCalledWith(approvedAgent);
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       companyId,
       actorType: "user",

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS,
+  OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS,
 } from "@paperclipai/shared";
 import { buildNewAgentRuntimeConfig } from "./new-agent-runtime-config";
 
@@ -40,6 +41,7 @@ describe("buildNewAgentRuntimeConfig", () => {
     expect(buildNewAgentRuntimeConfig({ adapterType: "openclaw_gateway" })).toMatchObject({
       heartbeat: {
         maxConcurrentRuns: OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS,
+        gatewayMaxConcurrentRuns: OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS,
       },
     });
   });

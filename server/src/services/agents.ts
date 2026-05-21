@@ -19,6 +19,7 @@ import {
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
   OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS,
+  OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS,
   isUuidLike,
   normalizeAgentUrlKey,
 } from "@paperclipai/shared";
@@ -134,6 +135,12 @@ function defaultMaxConcurrentRunsForAdapter(adapterType: unknown) {
     : AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
 }
 
+function defaultSharedOpenClawGatewayMaxConcurrentRuns() {
+  const configured = parseFiniteNumberLike(process.env.PAPERCLIP_OPENCLAW_SHARED_GATEWAY_MAX_CONCURRENT_RUNS);
+  if (configured == null) return OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS;
+  return Math.max(1, Math.trunc(configured));
+}
+
 function normalizeRuntimeConfigForNewAgent(
   runtimeConfig: unknown,
   adapterType: unknown,
@@ -144,6 +151,12 @@ function normalizeRuntimeConfigForNewAgent(
     : {};
   if (parseFiniteNumberLike(heartbeat.maxConcurrentRuns) == null) {
     heartbeat.maxConcurrentRuns = defaultMaxConcurrentRunsForAdapter(adapterType);
+  }
+  if (
+    adapterType === "openclaw_gateway" &&
+    parseFiniteNumberLike(heartbeat.gatewayMaxConcurrentRuns) == null
+  ) {
+    heartbeat.gatewayMaxConcurrentRuns = defaultSharedOpenClawGatewayMaxConcurrentRuns();
   }
   normalizedRuntimeConfig.heartbeat = heartbeat;
   return normalizedRuntimeConfig;
