@@ -2,6 +2,7 @@ import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
+import { OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS } from "@paperclipai/shared";
 
 vi.mock("acpx/runtime", () => ({
   createAcpRuntime: vi.fn(),
@@ -960,7 +961,10 @@ describe.sequential("agent permission routes", () => {
       }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
-    const createInput = mockAgentService.create.mock.calls[0]?.[1] as { adapterConfig?: Record<string, unknown> };
+    const createInput = mockAgentService.create.mock.calls[0]?.[1] as {
+      adapterConfig?: Record<string, unknown>;
+      runtimeConfig?: Record<string, unknown>;
+    };
     expect(createInput.adapterConfig).toMatchObject({
       url: "ws://127.0.0.1:18790",
       headers: { "x-openclaw-token": "parent-gateway-token-1234567890" },
@@ -970,13 +974,17 @@ describe.sequential("agent permission routes", () => {
       role: "operator",
       scopes: ["operator.admin"],
       sessionKeyStrategy: "issue",
+      agentId: "cmo",
+      claimedApiKeyPath: "~/.openclaw/workspace-cmo/paperclip-claimed-api-key.json",
     });
     expect(createInput.adapterConfig?.headers).not.toHaveProperty("x-extra-header");
     expect(createInput.adapterConfig?.devicePrivateKeyPem).toEqual(expect.stringContaining("BEGIN PRIVATE KEY"));
     expect(createInput.adapterConfig?.devicePrivateKeyPem).not.toBe("PARENT_DEVICE_KEY");
     expect(createInput.adapterConfig).not.toHaveProperty("payloadTemplate");
-    expect(createInput.adapterConfig).not.toHaveProperty("agentId");
     expect(createInput.adapterConfig).not.toHaveProperty("sessionKey");
+    expect(createInput.runtimeConfig).toMatchObject({
+      heartbeat: { maxConcurrentRuns: OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS },
+    });
   });
 
   it("preserves explicit OpenClaw child credentials over same-gateway inheritance", async () => {
@@ -1117,6 +1125,8 @@ describe.sequential("agent permission routes", () => {
       role: "operator",
       scopes: ["operator.admin"],
       sessionKeyStrategy: "issue",
+      agentId: "cmo",
+      claimedApiKeyPath: "~/.openclaw/workspace-cmo/paperclip-claimed-api-key.json",
     });
     expect(createInput.adapterConfig?.devicePrivateKeyPem).toEqual(expect.stringContaining("BEGIN PRIVATE KEY"));
     expect(createInput.adapterConfig?.devicePrivateKeyPem).not.toBe("PARENT_DEVICE_KEY");
