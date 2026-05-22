@@ -27,7 +27,7 @@ concurrency:
 
 jobs:
   verify_canary:
-    if: github.event_name == 'push'
+    if: github.repository == 'paperclipai/paperclip' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -67,7 +67,7 @@ jobs:
         run: pnpm build
 
   publish_canary:
-    if: github.event_name == 'push'
+    if: github.repository == 'paperclipai/paperclip' && github.event_name == 'push'
     needs: verify_canary
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -129,7 +129,7 @@ jobs:
           git push origin "refs/tags/${tag}"
 
   verify_stable:
-    if: github.event_name == 'workflow_dispatch'
+    if: github.repository == 'paperclipai/paperclip' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -170,7 +170,7 @@ jobs:
         run: pnpm build
 
   preview_stable:
-    if: github.event_name == 'workflow_dispatch' && inputs.dry_run
+    if: github.repository == 'paperclipai/paperclip' && github.event_name == 'workflow_dispatch' && inputs.dry_run
     needs: verify_stable
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -213,7 +213,7 @@ jobs:
           ./scripts/release.sh "${args[@]}"
 
   publish_stable:
-    if: github.event_name == 'workflow_dispatch' && !inputs.dry_run
+    if: github.repository == 'paperclipai/paperclip' && github.event_name == 'workflow_dispatch' && !inputs.dry_run
     needs: verify_stable
     runs-on: ubuntu-latest
     timeout-minutes: 45
