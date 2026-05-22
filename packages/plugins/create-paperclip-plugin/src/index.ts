@@ -734,6 +734,25 @@ function runCli() {
   console.log(`Created plugin scaffold at ${out}`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+export function shouldRunCreatePaperclipPluginCli(
+  entryPath = process.argv[1],
+  moduleUrl = import.meta.url,
+): boolean {
+  if (!entryPath) return false;
+  const modulePath = fileURLToPath(moduleUrl);
+  if (path.resolve(entryPath) !== path.resolve(modulePath)) return false;
+
+  try {
+    const packageJsonPath = path.resolve(path.dirname(modulePath), "..", "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as {
+      name?: string;
+    };
+    return packageJson.name === "@paperclipai/create-paperclip-plugin";
+  } catch {
+    return false;
+  }
+}
+
+if (shouldRunCreatePaperclipPluginCli()) {
   runCli();
 }

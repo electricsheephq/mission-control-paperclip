@@ -53,6 +53,22 @@ test("parseArtifactArgs rejects unsafe source refs", () => {
   );
 });
 
+test("paperclipai CLI package declares bundled runtime externals", async () => {
+  const [{ default: esbuildConfig }, cliPackageJson] = await Promise.all([
+    import("../cli/esbuild.config.mjs"),
+    readFile(new URL("../cli/package.json", import.meta.url), "utf8").then(JSON.parse),
+  ]);
+  const runtimeDependencies = new Set([
+    ...Object.keys(cliPackageJson.dependencies ?? {}),
+    ...Object.keys(cliPackageJson.optionalDependencies ?? {}),
+  ]);
+  const missing = (esbuildConfig.external ?? [])
+    .filter((name) => !name.startsWith("node:"))
+    .filter((name) => !runtimeDependencies.has(name));
+
+  assert.deepEqual(missing, []);
+});
+
 test("artifactFileName uses the evaOS runtime naming convention", () => {
   assert.equal(
     artifactFileName("2026.522.0-canary.0"),
