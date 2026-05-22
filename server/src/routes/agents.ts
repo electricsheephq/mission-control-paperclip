@@ -215,6 +215,29 @@ export function agentRoutes(
     }).catch(() => undefined);
   }
 
+  async function assertAgentHireRunContext(req: Request, companyId: string): Promise<void> {
+    const rawRunId = req.actor.runId;
+    if (rawRunId === undefined || rawRunId === null) return;
+    const runId = rawRunId.trim();
+    if (!runId) {
+      throw unprocessable("invalid_paperclip_run_id: X-Paperclip-Run-Id must be a heartbeat run UUID");
+    }
+    if (!isUuidLike(runId)) {
+      throw unprocessable("invalid_paperclip_run_id: X-Paperclip-Run-Id must be a heartbeat run UUID");
+    }
+    const run = await heartbeat.getRun(runId);
+    if (
+      !run ||
+      run.companyId !== companyId ||
+      (req.actor.type === "agent" && run.agentId !== req.actor.agentId)
+    ) {
+      throw unprocessable(
+        "invalid_paperclip_run_id: X-Paperclip-Run-Id does not identify a heartbeat run for this agent",
+      );
+    }
+    req.actor.runId = runId;
+  }
+
   async function assertAgentEnvironmentSelection(
     companyId: string,
     adapterType: string,
@@ -2131,6 +2154,7 @@ export function agentRoutes(
   router.post("/companies/:companyId/agent-hires", validate(createAgentHireSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     const actorAgent = await assertCanCreateAgentsForCompany(req, companyId);
+    await assertAgentHireRunContext(req, companyId);
     const sourceIssueIds = parseSourceIssueIds(req.body);
     const {
       desiredSkills: requestedDesiredSkills,

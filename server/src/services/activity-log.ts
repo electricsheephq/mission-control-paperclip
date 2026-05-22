@@ -62,14 +62,20 @@ export interface LogActivityInput {
   details?: Record<string, unknown> | null;
 }
 
-export async function logActivity(db: Db, input: LogActivityInput) {
-  const currentUserRedactionOptions = {
-    enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
-  };
-  const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
-  const redactedDetails = sanitizedDetails
-    ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
-    : null;
+function isRunIdProjectionError(err: unknown): boolean {
+  if (!err || typeof err !== "object") return false;
+  const record = err as Record<string, unknown>;
+  const code = typeof record.code === "string" ? record.code : "";
+  const constraint = typeof record.constraint === "string" ? record.constraint : "";
+  const message = err instanceof Error ? err.message : typeof record.message === "string" ? record.message : "";
+  return (
+    constraint === "activity_log_run_id_heartbeat_runs_id_fk" ||
+    message.includes("activity_log_run_id_heartbeat_runs_id_fk") ||
+    (code === "22P02" && message.includes("invalid input syntax for type uuid") && message.includes("run_id"))
+  );
+}
+
+async function insertActivityLog(db: Db, input: LogActivityInput, details: Record<string, unknown> | null) {
   await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -79,8 +85,30 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityId: input.entityId,
     agentId: input.agentId ?? null,
     runId: input.runId ?? null,
-    details: redactedDetails,
+    details,
   });
+}
+
+export async function logActivity(db: Db, input: LogActivityInput) {
+  const currentUserRedactionOptions = {
+    enabled: (await instanceSettingsService(db).getGeneral()).censorUsernameInLogs,
+  };
+  const sanitizedDetails = input.details ? sanitizeRecord(input.details) : null;
+  const redactedDetails = sanitizedDetails
+    ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
+    : null;
+  let loggedRunId = input.runId ?? null;
+  try {
+    await insertActivityLog(db, input, redactedDetails);
+  } catch (err) {
+    if (!input.runId || !isRunIdProjectionError(err)) throw err;
+    logger.warn(
+      { err, companyId: input.companyId, action: input.action, entityType: input.entityType },
+      "activity log run id was invalid or stale; retrying without run id",
+    );
+    await insertActivityLog(db, { ...input, runId: null }, redactedDetails);
+    loggedRunId = null;
+  }
 
   publishLiveEvent({
     companyId: input.companyId,
@@ -92,7 +120,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       entityType: input.entityType,
       entityId: input.entityId,
       agentId: input.agentId ?? null,
-      runId: input.runId ?? null,
+      runId: loggedRunId,
       details: redactedDetails,
     },
   });
@@ -111,7 +139,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
       payload: {
         ...redactedDetails,
         agentId: input.agentId ?? null,
-        runId: input.runId ?? null,
+        runId: loggedRunId,
       },
     };
     publishPluginDomainEvent(event);

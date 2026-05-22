@@ -16,6 +16,9 @@ vi.mock("acpx/runtime", () => ({
 
 const agentId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
+const heartbeatRunId = "33333333-3333-4333-8333-333333333333";
+const missingHeartbeatRunId = "44444444-4444-4444-8444-444444444444";
+const otherAgentId = "55555555-5555-4555-8555-555555555555";
 
 const baseAgent = {
   id: agentId,
@@ -396,6 +399,16 @@ describe.sequential("agent permission routes", () => {
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockImplementation(async (_companyId, requested) => requested);
     mockBudgetService.upsertPolicy.mockResolvedValue(undefined);
+    mockHeartbeatService.getRun.mockImplementation(async (runId: string) =>
+      runId === heartbeatRunId
+        ? {
+            id: heartbeatRunId,
+            companyId,
+            agentId,
+            status: "running",
+          }
+        : null,
+    );
     mockAgentInstructionsService.materializeManagedBundle.mockImplementation(
       async (agent: Record<string, unknown>, files: Record<string, string>) => ({
         bundle: null,
@@ -546,7 +559,7 @@ describe.sequential("agent permission routes", () => {
       agentId,
       companyId,
       source: "agent_key",
-      runId: "run-1",
+      runId: heartbeatRunId,
     });
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
@@ -576,7 +589,7 @@ describe.sequential("agent permission routes", () => {
       agentId,
       companyId,
       source: "agent_key",
-      runId: "run-1",
+      runId: heartbeatRunId,
     });
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
@@ -773,7 +786,7 @@ describe.sequential("agent permission routes", () => {
       agentId,
       companyId,
       source: "agent_key",
-      runId: "run-1",
+      runId: heartbeatRunId,
     });
 
     const res = await requestApp(app, (baseUrl) => request(baseUrl)
@@ -1178,6 +1191,187 @@ describe.sequential("agent permission routes", () => {
     expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 
+  it("rejects agent hire requests with a non-UUID run id before creating rows", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "not-a-heartbeat-run",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "CMO",
+        role: "cmo",
+        adapterType: "process",
+        adapterConfig: {},
+      }));
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("invalid_paperclip_run_id");
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockOpenClawProvisioning.applySameGatewayOpenClawProvisioningDefaults).not.toHaveBeenCalled();
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent hire requests with a blank run id before creating rows", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "   ",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "CMO",
+        role: "cmo",
+        adapterType: "process",
+        adapterConfig: {},
+      }));
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("invalid_paperclip_run_id");
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockOpenClawProvisioning.applySameGatewayOpenClawProvisioningDefaults).not.toHaveBeenCalled();
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent hire requests with a missing heartbeat run before creating rows", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: missingHeartbeatRunId,
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "CMO",
+        role: "cmo",
+        adapterType: "process",
+        adapterConfig: {},
+      }));
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("invalid_paperclip_run_id");
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith(missingHeartbeatRunId);
+    expect(mockOpenClawProvisioning.applySameGatewayOpenClawProvisioningDefaults).not.toHaveBeenCalled();
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects agent hire requests with another agent's heartbeat run before creating rows", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockHeartbeatService.getRun.mockResolvedValueOnce({
+      id: heartbeatRunId,
+      companyId,
+      agentId: otherAgentId,
+      status: "running",
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: heartbeatRunId,
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "CMO",
+        role: "cmo",
+        adapterType: "process",
+        adapterConfig: {},
+      }));
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("invalid_paperclip_run_id");
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith(heartbeatRunId);
+    expect(mockOpenClawProvisioning.applySameGatewayOpenClawProvisioningDefaults).not.toHaveBeenCalled();
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects board hire requests with an invalid run id before creating rows", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: [companyId],
+      runId: "not-a-heartbeat-run",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "CMO",
+        role: "cmo",
+        adapterType: "process",
+        adapterConfig: {},
+      }));
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("invalid_paperclip_run_id");
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockOpenClawProvisioning.applySameGatewayOpenClawProvisioningDefaults).not.toHaveBeenCalled();
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("accepts valid agent hire run ids before provisioning OpenClaw children", async () => {
+    mockAccessService.hasPermission.mockResolvedValue(true);
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterType: "openclaw_gateway",
+      adapterConfig: {
+        url: "ws://127.0.0.1:18790",
+        headers: { "x-openclaw-token": "parent-gateway-token-1234567890" },
+      },
+      permissions: { canCreateAgents: true },
+    });
+
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: heartbeatRunId,
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "CMO",
+        role: "cmo",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockHeartbeatService.getRun).toHaveBeenCalledWith(heartbeatRunId);
+    expect(mockOpenClawProvisioning.ensureOpenClawAgentForAdapterConfigOrThrow).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "cmo" }),
+    );
+    expect(mockOpenClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow).toHaveBeenCalled();
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "agent.hire_created",
+      runId: heartbeatRunId,
+    }));
+  });
+
   it("inherits same-gateway OpenClaw credentials before persisting an agent hire approval payload", async () => {
     mockAccessService.hasPermission.mockResolvedValue(true);
     mockAgentService.getById.mockResolvedValue({
@@ -1207,7 +1401,7 @@ describe.sequential("agent permission routes", () => {
         agentId,
         companyId,
         source: "agent_key",
-        runId: "run-1",
+        runId: heartbeatRunId,
       },
       { requireBoardApprovalForNewAgents: true },
     );
