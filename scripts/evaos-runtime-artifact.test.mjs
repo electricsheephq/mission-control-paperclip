@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   artifactFileName,
   createArtifactManifest,
+  linkCliRuntimeExternals,
   parseArtifactArgs,
   patchDeployedPackageVersions,
 } from "./evaos-runtime-artifact.mjs";
@@ -79,6 +80,36 @@ test("createArtifactManifest records source and checksum metadata", () => {
     installPackageRoot: "paperclipai",
     bin: "dist/index.js",
   });
+});
+
+test("linkCliRuntimeExternals links bundled CLI externals from deployed pnpm tree", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-evaos-links-"));
+  const packageRoot = path.join(root, "paperclipai");
+  const zodRoot = path.join(packageRoot, "node_modules", ".pnpm", "zod@3.25.76", "node_modules", "zod");
+  const serverRoot = path.join(packageRoot, "node_modules", "@paperclipai", "server");
+
+  try {
+    await mkdir(zodRoot, { recursive: true });
+    await mkdir(serverRoot, { recursive: true });
+    await writeFile(path.join(zodRoot, "package.json"), "{}");
+    await writeFile(path.join(serverRoot, "package.json"), "{}");
+
+    const linked = await linkCliRuntimeExternals(packageRoot, [
+      "zod",
+      "@paperclipai/server",
+      "zod",
+    ]);
+
+    assert.deepEqual(linked, ["zod"]);
+    const linkPath = path.join(packageRoot, "node_modules", "zod");
+    assert.equal((await lstat(linkPath)).isSymbolicLink(), true);
+    assert.equal(
+      path.resolve(path.dirname(linkPath), await readlink(linkPath)),
+      zodRoot,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("patchDeployedPackageVersions rewrites the deployed package tree only", async () => {
