@@ -8,6 +8,7 @@ SOURCE_REF="HEAD"
 SKIP_BUILD=0
 SKIP_SMOKE=0
 KEEP_STAGE=0
+BUILD_EXECUTED=0
 
 usage() {
   cat <<'USAGE'
@@ -62,16 +63,19 @@ cleanup() {
     printf 'kept artifact stage at %s\n' "$STAGE_PARENT"
   fi
 
-  rm -rf "$REPO_ROOT/server/ui-dist"
-  for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
-    rm -rf "$REPO_ROOT/$pkg_dir/skills"
-  done
+  if [[ "$BUILD_EXECUTED" == "1" ]]; then
+    rm -rf "$REPO_ROOT/server/ui-dist"
+    for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
+      rm -rf "$REPO_ROOT/$pkg_dir/skills"
+    done
+  fi
 }
 trap cleanup EXIT
 
 cd "$REPO_ROOT"
 
 if [[ "$SKIP_BUILD" != "1" ]]; then
+  BUILD_EXECUTED=1
   pnpm run preflight:workspace-links
   pnpm build
   node "$REPO_ROOT/scripts/build-standalone-public-packages.mjs"

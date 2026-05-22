@@ -66,6 +66,9 @@ export function parseArtifactArgs(argv) {
   if (!parsed.sourceRef) {
     parsed.sourceRef = "HEAD";
   }
+  if (!/^[0-9A-Za-z._/@+-]+$/.test(parsed.sourceRef)) {
+    throw new Error(`invalid source ref: ${parsed.sourceRef}`);
+  }
 
   return parsed;
 }

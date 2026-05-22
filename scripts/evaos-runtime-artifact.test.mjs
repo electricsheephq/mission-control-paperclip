@@ -39,6 +39,20 @@ test("parseArtifactArgs requires a version and output directory", () => {
   );
 });
 
+test("parseArtifactArgs rejects unsafe source refs", () => {
+  assert.throws(
+    () => parseArtifactArgs([
+      "--version",
+      "2026.522.0-canary.0",
+      "--out-dir",
+      "/tmp/evaos",
+      "--source-ref",
+      "main;echo bad",
+    ]),
+    /invalid source ref/,
+  );
+});
+
 test("artifactFileName uses the evaOS runtime naming convention", () => {
   assert.equal(
     artifactFileName("2026.522.0-canary.0"),
