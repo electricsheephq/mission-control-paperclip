@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -11,6 +11,7 @@ function usage() {
   return `Usage:
   scripts/build-evaos-runtime-artifact.sh --version VERSION --out-dir DIR [options]
   node scripts/evaos-runtime-artifact.mjs patch-versions PACKAGE_ROOT VERSION
+  node scripts/evaos-runtime-artifact.mjs link-cli-externals PACKAGE_ROOT EXTERNAL...
   node scripts/evaos-runtime-artifact.mjs write-manifest OUT VERSION SOURCE_REF SOURCE_SHA ARTIFACT SHA256
 `;
 }
@@ -150,6 +151,69 @@ export async function patchDeployedPackageVersions(packageRoot, version) {
   }
 }
 
+async function pathExists(filePath, { followSymlink = true } = {}) {
+  try {
+    await (followSymlink ? stat(filePath) : lstat(filePath));
+    return true;
+  } catch (err) {
+    if (err?.code === "ENOENT") {
+      return false;
+    }
+    throw err;
+  }
+}
+
+function nodeModulePackagePath(nodeModulesPath, packageName) {
+  return path.join(nodeModulesPath, ...packageName.split("/"));
+}
+
+async function findDeployedDependencyRoot(packageRoot, packageName) {
+  const nodeModulesPath = path.join(packageRoot, "node_modules");
+  const directPath = nodeModulePackagePath(nodeModulesPath, packageName);
+  if (await pathExists(directPath)) {
+    return directPath;
+  }
+
+  const pnpmStorePath = path.join(nodeModulesPath, ".pnpm");
+  const entries = await readdir(pnpmStorePath, { withFileTypes: true });
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (!entry.isDirectory()) continue;
+    const candidate = nodeModulePackagePath(
+      path.join(pnpmStorePath, entry.name, "node_modules"),
+      packageName,
+    );
+    if (await pathExists(candidate)) {
+      return candidate;
+    }
+  }
+
+  throw new Error(`deployed dependency not found for CLI external: ${packageName}`);
+}
+
+export async function linkCliRuntimeExternals(packageRoot, externals) {
+  const rootStat = await stat(packageRoot);
+  if (!rootStat.isDirectory()) {
+    throw new Error(`package root is not a directory: ${packageRoot}`);
+  }
+
+  const nodeModulesPath = path.join(packageRoot, "node_modules");
+  const linked = [];
+  for (const packageName of [...new Set(externals)].sort()) {
+    if (!packageName || packageName.startsWith("node:")) continue;
+
+    const directPath = nodeModulePackagePath(nodeModulesPath, packageName);
+    if (await pathExists(directPath, { followSymlink: false })) {
+      continue;
+    }
+
+    const targetPath = await findDeployedDependencyRoot(packageRoot, packageName);
+    await mkdir(path.dirname(directPath), { recursive: true });
+    await symlink(path.relative(path.dirname(directPath), targetPath), directPath);
+    linked.push(packageName);
+  }
+  return linked;
+}
+
 export async function sha256File(filePath) {
   const hash = createHash("sha256");
   hash.update(await readFile(filePath));
@@ -173,6 +237,14 @@ async function main(argv) {
       throw new Error("patch-versions requires PACKAGE_ROOT and VERSION");
     }
     await patchDeployedPackageVersions(packageRoot, version);
+    return;
+  }
+  if (command === "link-cli-externals") {
+    const [packageRoot, ...externals] = rest;
+    if (!packageRoot || externals.length === 0) {
+      throw new Error("link-cli-externals requires PACKAGE_ROOT and at least one EXTERNAL");
+    }
+    await linkCliRuntimeExternals(packageRoot, externals);
     return;
   }
   if (command === "sha256") {

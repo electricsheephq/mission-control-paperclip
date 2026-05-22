@@ -89,6 +89,16 @@ fi
 rm -rf "$PACKAGE_ROOT"
 pnpm --filter paperclipai deploy --prod "$PACKAGE_ROOT"
 node "$REPO_ROOT/scripts/evaos-runtime-artifact.mjs" patch-versions "$PACKAGE_ROOT" "$VERSION"
+mapfile -t CLI_RUNTIME_EXTERNALS < <(node --input-type=module <<'NODE'
+import config from "./cli/esbuild.config.mjs";
+for (const external of config.external ?? []) {
+  console.log(external);
+}
+NODE
+)
+if ((${#CLI_RUNTIME_EXTERNALS[@]} > 0)); then
+  node "$REPO_ROOT/scripts/evaos-runtime-artifact.mjs" link-cli-externals "$PACKAGE_ROOT" "${CLI_RUNTIME_EXTERNALS[@]}"
+fi
 
 if [[ "$SKIP_SMOKE" != "1" ]]; then
   node "$PACKAGE_ROOT/dist/index.js" --version >/dev/null
