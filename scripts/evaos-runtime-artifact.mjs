@@ -1,6 +1,18 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import {
+  cp,
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -111,13 +123,53 @@ async function writeJson(filePath, value) {
   await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-async function patchPackageJson(filePath, version) {
+function isPathInside(childPath, parentPath) {
+  const relative = path.relative(parentPath, childPath);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+async function materializeExternalPackageRoot(packageDir, installRoot) {
+  const packageDirReal = await realpath(packageDir);
+  const installRootReal = await realpath(installRoot);
+  if (isPathInside(packageDirReal, installRootReal)) return;
+
+  const tempDir = `${packageDir}.runtime-${process.pid}-${Date.now()}`;
+  await rm(tempDir, { recursive: true, force: true });
+  await cp(packageDirReal, tempDir, { recursive: true, dereference: true });
+  await rm(packageDir, { recursive: true, force: true });
+  await rename(tempDir, packageDir);
+}
+
+async function breakPackageJsonHardlink(filePath) {
+  const tempPath = `${filePath}.runtime-${process.pid}-${Date.now()}`;
+  await writeFile(tempPath, await readFile(filePath, "utf8"));
+  await rename(tempPath, filePath);
+}
+
+async function patchPackageJson(filePath, version, installRoot) {
+  await materializeExternalPackageRoot(path.dirname(filePath), installRoot);
+  await breakPackageJsonHardlink(filePath);
   const pkg = JSON.parse(await readFile(filePath, "utf8"));
   if (pkg.name === "paperclipai" || String(pkg.name ?? "").startsWith("@paperclipai/")) {
     pkg.version = version;
+    applyPublishConfigRuntimeMetadata(pkg);
   }
   rewritePaperclipDependencyVersions(pkg, version);
   await writeJson(filePath, pkg);
+}
+
+function applyPublishConfigRuntimeMetadata(pkg) {
+  const publishConfig = pkg.publishConfig;
+  if (!publishConfig || typeof publishConfig !== "object") return;
+
+  if (Object.hasOwn(publishConfig, "exports")) {
+    pkg.exports = publishConfig.exports;
+  }
+  for (const field of ["main", "module", "types"]) {
+    if (Object.hasOwn(publishConfig, field)) {
+      pkg[field] = publishConfig[field];
+    }
+  }
 }
 
 async function listScopedPaperclipPackageJsons(packageRoot) {
@@ -125,8 +177,17 @@ async function listScopedPaperclipPackageJsons(packageRoot) {
   const entries = [];
   try {
     for (const entry of await readdir(scopedRoot, { withFileTypes: true })) {
-      if (entry.isDirectory()) {
-        entries.push(path.join(scopedRoot, entry.name, "package.json"));
+      const packageRoot = path.join(scopedRoot, entry.name);
+      const packageJson = path.join(packageRoot, "package.json");
+      try {
+        const packageStat = await stat(packageRoot);
+        if (packageStat.isDirectory() && await pathExists(packageJson)) {
+          entries.push(packageJson);
+        }
+      } catch (err) {
+        if (err?.code !== "ENOENT") {
+          throw err;
+        }
       }
     }
   } catch (err) {
@@ -147,7 +208,7 @@ export async function patchDeployedPackageVersions(packageRoot, version) {
     ...(await listScopedPaperclipPackageJsons(packageRoot)),
   ];
   for (const packageJson of packageJsons) {
-    await patchPackageJson(packageJson, version);
+    await patchPackageJson(packageJson, version, packageRoot);
   }
 }
 
