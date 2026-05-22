@@ -89,7 +89,10 @@ fi
 rm -rf "$PACKAGE_ROOT"
 pnpm --filter paperclipai deploy --prod "$PACKAGE_ROOT"
 node "$REPO_ROOT/scripts/evaos-runtime-artifact.mjs" patch-versions "$PACKAGE_ROOT" "$VERSION"
-mapfile -t CLI_RUNTIME_EXTERNALS < <(node --input-type=module <<'NODE'
+CLI_RUNTIME_EXTERNALS=()
+while IFS= read -r external; do
+  CLI_RUNTIME_EXTERNALS+=("$external")
+done < <(node --input-type=module <<'NODE'
 import config from "./cli/esbuild.config.mjs";
 for (const external of config.external ?? []) {
   console.log(external);
@@ -103,6 +106,7 @@ fi
 if [[ "$SKIP_SMOKE" != "1" ]]; then
   node "$PACKAGE_ROOT/dist/index.js" --version >/dev/null
   node "$PACKAGE_ROOT/dist/index.js" run --help >/dev/null
+  (cd "$PACKAGE_ROOT" && node --input-type=module -e 'await import("@paperclipai/server")')
   grep -R "PAPERCLIP_OPENCLAW_PROVISIONER" "$PACKAGE_ROOT/node_modules/@paperclipai/server/dist" >/dev/null
   grep -R "gatewayMaxConcurrentRuns" "$PACKAGE_ROOT/node_modules/@paperclipai/server/dist" >/dev/null
 fi

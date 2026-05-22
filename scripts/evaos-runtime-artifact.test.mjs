@@ -1,5 +1,15 @@
 import assert from "node:assert/strict";
-import { lstat, mkdir, mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import {
+  link,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readlink,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -116,9 +126,21 @@ test("patchDeployedPackageVersions rewrites the deployed package tree only", asy
   const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-evaos-artifact-"));
   const packageRoot = path.join(root, "paperclipai");
   const adapterRoot = path.join(packageRoot, "node_modules", "@paperclipai", "adapter-openclaw-gateway");
+  const sourceServerPackageJson = path.join(root, "server-package.json");
+  const serverStoreRoot = path.join(
+    packageRoot,
+    "node_modules",
+    ".pnpm",
+    "@paperclipai+server@file+server_hash",
+    "node_modules",
+    "@paperclipai",
+    "server",
+  );
+  const serverLinkRoot = path.join(packageRoot, "node_modules", "@paperclipai", "server");
 
   try {
     await mkdir(adapterRoot, { recursive: true });
+    await mkdir(serverStoreRoot, { recursive: true });
     await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({
       name: "paperclipai",
       version: "0.3.1",
@@ -135,16 +157,59 @@ test("patchDeployedPackageVersions rewrites the deployed package tree only", asy
         "@paperclipai/adapter-utils": "workspace:*",
       },
     }, null, 2));
+    await writeFile(sourceServerPackageJson, JSON.stringify({
+      name: "@paperclipai/server",
+      version: "0.3.1",
+      exports: {
+        ".": "./src/index.ts",
+      },
+      publishConfig: {
+        exports: {
+          ".": {
+            types: "./dist/index.d.ts",
+            import: "./dist/index.js",
+          },
+        },
+        main: "./dist/index.js",
+        types: "./dist/index.d.ts",
+      },
+      dependencies: {
+        "@paperclipai/adapter-openclaw-gateway": "workspace:*",
+      },
+    }, null, 2));
+    await link(sourceServerPackageJson, path.join(serverStoreRoot, "package.json"));
+    await symlink(
+      path.relative(path.dirname(serverLinkRoot), serverStoreRoot),
+      serverLinkRoot,
+    );
 
     await patchDeployedPackageVersions(packageRoot, "2026.522.0-canary.0");
 
     const rootPkg = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8"));
     const adapterPkg = JSON.parse(await readFile(path.join(adapterRoot, "package.json"), "utf8"));
+    const serverPkg = JSON.parse(await readFile(path.join(serverStoreRoot, "package.json"), "utf8"));
+    const sourceServerPkg = JSON.parse(await readFile(sourceServerPackageJson, "utf8"));
     assert.equal(rootPkg.version, "2026.522.0-canary.0");
     assert.equal(rootPkg.dependencies["@paperclipai/server"], "2026.522.0-canary.0");
     assert.equal(rootPkg.dependencies.picocolors, "^1.1.1");
     assert.equal(adapterPkg.version, "2026.522.0-canary.0");
     assert.equal(adapterPkg.dependencies["@paperclipai/adapter-utils"], "2026.522.0-canary.0");
+    assert.equal(serverPkg.version, "2026.522.0-canary.0");
+    assert.deepEqual(serverPkg.exports, {
+      ".": {
+        types: "./dist/index.d.ts",
+        import: "./dist/index.js",
+      },
+    });
+    assert.equal(serverPkg.main, "./dist/index.js");
+    assert.equal(serverPkg.types, "./dist/index.d.ts");
+    assert.equal(
+      serverPkg.dependencies["@paperclipai/adapter-openclaw-gateway"],
+      "2026.522.0-canary.0",
+    );
+    assert.equal(sourceServerPkg.version, "0.3.1");
+    assert.equal(sourceServerPkg.exports["."], "./src/index.ts");
+    assert.equal((await lstat(serverLinkRoot)).isSymbolicLink(), true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
