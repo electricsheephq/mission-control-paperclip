@@ -2077,6 +2077,114 @@ export function resolveJoinRequestAgentManagerId(
   return (rootCeo ?? ceoCandidates[0] ?? null)?.id ?? null;
 }
 
+type JoinApprovalAgentService = ReturnType<typeof agentService>;
+type JoinApprovalAgentRecord = NonNullable<
+  Awaited<ReturnType<JoinApprovalAgentService["getById"]>>
+>;
+
+function provisioningFailureMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+async function persistJoinOpenClawProvisioningFailure(input: {
+  db: Db;
+  companyId: string;
+  requestId: string;
+  actorId: string;
+  phase: "ensure_agent" | "ensure_claim";
+  error: unknown;
+  createdAgentId?: string | null;
+  adapterConfig?: Record<string, unknown> | null;
+}) {
+  const detail = provisioningFailureMessage(input.error);
+  const update: Partial<typeof joinRequests.$inferInsert> = {
+    updatedAt: new Date(),
+  };
+  if (input.createdAgentId) {
+    update.createdAgentId = input.createdAgentId;
+  }
+  if (input.adapterConfig) {
+    update.agentDefaultsPayload = input.adapterConfig;
+  }
+  await input.db
+    .update(joinRequests)
+    .set(update)
+    .where(eq(joinRequests.id, input.requestId))
+    .catch(() => undefined);
+  await logActivity(input.db, {
+    companyId: input.companyId,
+    actorType: "user",
+    actorId: input.actorId,
+    action: "join.provisioning_failed",
+    entityType: "join_request",
+    entityId: input.requestId,
+    details: {
+      reason: "openclaw_provisioning_failed",
+      phase: input.phase,
+      error: detail,
+      createdAgentId: input.createdAgentId ?? null,
+    },
+  }).catch(() => undefined);
+}
+
+async function pauseJoinOpenClawAgentAfterProvisioningFailure(input: {
+  db: Db;
+  agents: JoinApprovalAgentService;
+  companyId: string;
+  requestId: string;
+  actorId: string;
+  phase: "ensure_agent" | "ensure_claim";
+  error: unknown;
+  agent: JoinApprovalAgentRecord;
+}) {
+  const detail = provisioningFailureMessage(input.error);
+  const paused = await input.agents
+    .update(input.agent.id, {
+      status: "paused",
+      pauseReason: `OpenClaw provisioning failed: ${detail}`,
+    })
+    .catch(() => null);
+  if (paused) {
+    await logActivity(input.db, {
+      companyId: input.companyId,
+      actorType: "user",
+      actorId: input.actorId,
+      action: "agent.paused",
+      entityType: "agent",
+      entityId: input.agent.id,
+      details: {
+        reason: "openclaw_provisioning_failed",
+        error: detail,
+        source: "join_request",
+        joinRequestId: input.requestId,
+      },
+    }).catch(() => undefined);
+  }
+  await persistJoinOpenClawProvisioningFailure({
+    db: input.db,
+    companyId: input.companyId,
+    requestId: input.requestId,
+    actorId: input.actorId,
+    phase: input.phase,
+    error: input.error,
+    createdAgentId: input.agent.id,
+    adapterConfig:
+      input.agent.adapterConfig &&
+      typeof input.agent.adapterConfig === "object" &&
+      !Array.isArray(input.agent.adapterConfig)
+        ? (input.agent.adapterConfig as Record<string, unknown>)
+        : null,
+  });
+}
+
+function wasPausedForOpenClawProvisioningFailure(agent: JoinApprovalAgentRecord) {
+  return (
+    agent.status === "paused" &&
+    typeof agent.pauseReason === "string" &&
+    agent.pauseReason.startsWith("OpenClaw provisioning failed")
+  );
+}
+
 function isInviteTokenHashCollisionError(error: unknown) {
   const candidates = [
     error,
@@ -3784,44 +3892,100 @@ export function accessRoutes(
           typeof existing.agentDefaultsPayload === "object"
             ? (existing.agentDefaultsPayload as Record<string, unknown>)
             : {};
-        if (adapterType === "openclaw_gateway") {
-          adapterConfig = await openClawProvisioning.applyLocalOpenClawProvisioningDefaults({
-            companyId,
-            requestedName: agentName,
+        let approvedAgent: JoinApprovalAgentRecord | null = null;
+        const provisioningActorId =
+          req.actor.userId ?? (isLocalImplicit(req) ? "local-board" : "board");
+
+        if (createdAgentId) {
+          const reusableAgent = await agents.getById(createdAgentId);
+          if (!reusableAgent || reusableAgent.companyId !== companyId) {
+            throw conflict("Join request has a missing created agent");
+          }
+          approvedAgent = reusableAgent;
+        } else {
+          if (adapterType === "openclaw_gateway") {
+            try {
+              adapterConfig = await openClawProvisioning.applyLocalOpenClawProvisioningDefaults({
+                companyId,
+                requestedName: agentName,
+                adapterType,
+                adapterConfig,
+              });
+              await db
+                .update(joinRequests)
+                .set({
+                  agentDefaultsPayload: adapterConfig,
+                  updatedAt: new Date()
+                })
+                .where(eq(joinRequests.id, requestId))
+                .catch(() => undefined);
+              await openClawProvisioning.ensureOpenClawAgentForAdapterConfigOrThrow(
+                adapterConfig,
+              );
+            } catch (error) {
+              await persistJoinOpenClawProvisioningFailure({
+                db,
+                companyId,
+                requestId,
+                actorId: provisioningActorId,
+                phase: "ensure_agent",
+                error,
+                adapterConfig,
+              });
+              throw error;
+            }
+          }
+
+          approvedAgent = await agents.create(companyId, {
+            name: agentName,
+            role: "general",
+            title: null,
+            status: "idle",
+            reportsTo: managerId,
+            capabilities: existing.capabilities ?? null,
             adapterType,
             adapterConfig,
+            runtimeConfig: {},
+            budgetMonthlyCents: 0,
+            spentMonthlyCents: 0,
+            permissions: {},
+            lastHeartbeatAt: null,
+            metadata: null
           });
-          await openClawProvisioning.ensureOpenClawAgentForAdapterConfigOrThrow(
-            adapterConfig,
-          );
+          createdAgentId = approvedAgent.id;
         }
 
-        const created = await agents.create(companyId, {
-          name: agentName,
-          role: "general",
-          title: null,
-          status: "idle",
-          reportsTo: managerId,
-          capabilities: existing.capabilities ?? null,
-          adapterType,
-          adapterConfig,
-          runtimeConfig: {},
-          budgetMonthlyCents: 0,
-          spentMonthlyCents: 0,
-          permissions: {},
-          lastHeartbeatAt: null,
-          metadata: null
-        });
-        if (adapterType === "openclaw_gateway") {
-          await openClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow(
-            created,
-          );
+        if (approvedAgent.adapterType === "openclaw_gateway") {
+          try {
+            await openClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow(
+              approvedAgent,
+            );
+            if (wasPausedForOpenClawProvisioningFailure(approvedAgent)) {
+              approvedAgent =
+                (await agents.update(approvedAgent.id, {
+                  status: "idle",
+                  pauseReason: null,
+                  pausedAt: null,
+                })) ?? approvedAgent;
+            }
+          } catch (error) {
+            await pauseJoinOpenClawAgentAfterProvisioningFailure({
+              db,
+              agents,
+              companyId,
+              requestId,
+              actorId: provisioningActorId,
+              phase: "ensure_claim",
+              error,
+              agent: approvedAgent,
+            });
+            throw error;
+          }
         }
-        createdAgentId = created.id;
         await access.ensureMembership(
           companyId,
           "agent",
-          created.id,
+          approvedAgent.id,
           "member",
           "active"
         );
@@ -3831,7 +3995,7 @@ export function accessRoutes(
         await access.setPrincipalGrants(
           companyId,
           "agent",
-          created.id,
+          approvedAgent.id,
           grants,
           req.actor.userId ?? null
         );
