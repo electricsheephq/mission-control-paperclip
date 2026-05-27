@@ -303,6 +303,22 @@ export function openClawGatewayProvisioningService(db: Db) {
       return input.adapterConfig;
     }
 
+    return applyLocalOpenClawProvisioningDefaults(input);
+  }
+
+  async function applyLocalOpenClawProvisioningDefaults(input: {
+    companyId: string;
+    requestedName: string;
+    adapterType: string;
+    adapterConfig: Record<string, unknown>;
+  }): Promise<Record<string, unknown>> {
+    if (
+      input.adapterType !== "openclaw_gateway" ||
+      !isLocalOpenClawGatewayUrl(input.adapterConfig.url)
+    ) {
+      return input.adapterConfig;
+    }
+
     const next = { ...input.adapterConfig };
     let agentId = asNonEmptyString(next.agentId);
     if (!agentId) {
@@ -413,6 +429,7 @@ export function openClawGatewayProvisioningService(db: Db) {
   }
 
   async function ensureOpenClawProvisionedForAgent(agent: AgentRecord): Promise<void> {
+    if (agent.adapterType !== "openclaw_gateway") return;
     const adapterConfig = asRecord(agent.adapterConfig) ?? {};
     if (!shouldAutoProvisionOpenClawGatewayChild(adapterConfig)) return;
     if (!isLocalOpenClawGatewayUrl(adapterConfig.url)) return;
@@ -459,6 +476,7 @@ export function openClawGatewayProvisioningService(db: Db) {
   }
 
   return {
+    applyLocalOpenClawProvisioningDefaults,
     applySameGatewayOpenClawProvisioningDefaults,
     ensureOpenClawAgentForAdapterConfig,
     ensureOpenClawAgentForAdapterConfigOrThrow,

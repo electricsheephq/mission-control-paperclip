@@ -20,6 +20,22 @@ vi.mock("../services/agents.js", () => ({
 describe("openClawGatewayProvisioningService", () => {
   const originalEnv = { ...process.env };
 
+  function createDbWithOpenClawAgentIds(agentIds: string[]) {
+    return {
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn(() =>
+            Promise.resolve(
+              agentIds.map((agentId) => ({
+                adapterConfig: { agentId },
+              })),
+            ),
+          ),
+        })),
+      })),
+    };
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     process.env = { ...originalEnv };
@@ -49,6 +65,90 @@ describe("openClawGatewayProvisioningService", () => {
       "ws://[::1]:18790",
       "ws://[::1]:18790/",
     ]));
+  });
+
+  it("derives child agent provisioning fields for local invite approvals", async () => {
+    const svc = openClawGatewayProvisioningService(
+      createDbWithOpenClawAgentIds([]) as never,
+    );
+
+    const result = await svc.applyLocalOpenClawProvisioningDefaults({
+      companyId: "company-1",
+      requestedName: "SEO Manager",
+      adapterType: "openclaw_gateway",
+      adapterConfig: {
+        url: "ws://127.0.0.1:18790/",
+      },
+    });
+
+    expect(result).toMatchObject({
+      agentId: "seo-manager",
+      openclawWorkspacePath: "~/.openclaw/workspace-seo-manager",
+      claimedApiKeyPath:
+        "~/.openclaw/workspace-seo-manager/paperclip-claimed-api-key.json",
+    });
+  });
+
+  it("deduplicates local invite approval child agent ids", async () => {
+    const svc = openClawGatewayProvisioningService(
+      createDbWithOpenClawAgentIds(["seo-manager"]) as never,
+    );
+
+    const result = await svc.applyLocalOpenClawProvisioningDefaults({
+      companyId: "company-1",
+      requestedName: "SEO Manager",
+      adapterType: "openclaw_gateway",
+      adapterConfig: {
+        url: "ws://127.0.0.1:18790/",
+      },
+    });
+
+    expect(result).toMatchObject({
+      agentId: "seo-manager-2",
+      openclawWorkspacePath: "~/.openclaw/workspace-seo-manager-2",
+      claimedApiKeyPath:
+        "~/.openclaw/workspace-seo-manager-2/paperclip-claimed-api-key.json",
+    });
+  });
+
+  it("leaves non-local invite approval configs unchanged", async () => {
+    const adapterConfig = { url: "wss://gateway.example.test/" };
+    const svc = openClawGatewayProvisioningService(
+      createDbWithOpenClawAgentIds([]) as never,
+    );
+
+    const result = await svc.applyLocalOpenClawProvisioningDefaults({
+      companyId: "company-1",
+      requestedName: "SEO Manager",
+      adapterType: "openclaw_gateway",
+      adapterConfig,
+    });
+
+    expect(result).toBe(adapterConfig);
+  });
+
+  it("leaves invite approval configs with existing child agent ids unchanged", async () => {
+    const svc = openClawGatewayProvisioningService(
+      createDbWithOpenClawAgentIds([]) as never,
+    );
+
+    const result = await svc.applyLocalOpenClawProvisioningDefaults({
+      companyId: "company-1",
+      requestedName: "SEO Manager",
+      adapterType: "openclaw_gateway",
+      adapterConfig: {
+        url: "ws://127.0.0.1:18790/",
+        agentId: "existing-child",
+        openclawWorkspacePath: "~/.openclaw/custom",
+        claimedApiKeyPath: "~/.openclaw/custom/claim.json",
+      },
+    });
+
+    expect(result).toMatchObject({
+      agentId: "existing-child",
+      openclawWorkspacePath: "~/.openclaw/custom",
+      claimedApiKeyPath: "~/.openclaw/custom/claim.json",
+    });
   });
 
   async function writeCaptureProvisioner(capturePath: string) {

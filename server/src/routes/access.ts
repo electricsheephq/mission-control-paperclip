@@ -64,6 +64,7 @@ import {
   logActivity,
   notifyHireApproved
 } from "../services/index.js";
+import { openClawGatewayProvisioningService } from "../services/openclaw-gateway-provisioning.js";
 import {
   grantsForHumanRole,
   normalizeHumanRole,
@@ -2440,6 +2441,7 @@ export function accessRoutes(
   const access = accessService(db);
   const boardAuth = boardAuthService(db);
   const agents = agentService(db);
+  const openClawProvisioning = openClawGatewayProvisioningService(db);
   const routeInviteResolutionNetwork = opts.inviteResolutionNetwork
     ? { ...defaultInviteResolutionNetwork, ...opts.inviteResolutionNetwork }
     : inviteResolutionNetwork;
@@ -3776,6 +3778,24 @@ export function accessRoutes(
           }))
         );
 
+        const adapterType = existing.adapterType ?? "process";
+        let adapterConfig =
+          existing.agentDefaultsPayload &&
+          typeof existing.agentDefaultsPayload === "object"
+            ? (existing.agentDefaultsPayload as Record<string, unknown>)
+            : {};
+        if (adapterType === "openclaw_gateway") {
+          adapterConfig = await openClawProvisioning.applyLocalOpenClawProvisioningDefaults({
+            companyId,
+            requestedName: agentName,
+            adapterType,
+            adapterConfig,
+          });
+          await openClawProvisioning.ensureOpenClawAgentForAdapterConfigOrThrow(
+            adapterConfig,
+          );
+        }
+
         const created = await agents.create(companyId, {
           name: agentName,
           role: "general",
@@ -3783,12 +3803,8 @@ export function accessRoutes(
           status: "idle",
           reportsTo: managerId,
           capabilities: existing.capabilities ?? null,
-          adapterType: existing.adapterType ?? "process",
-          adapterConfig:
-            existing.agentDefaultsPayload &&
-            typeof existing.agentDefaultsPayload === "object"
-              ? (existing.agentDefaultsPayload as Record<string, unknown>)
-              : {},
+          adapterType,
+          adapterConfig,
           runtimeConfig: {},
           budgetMonthlyCents: 0,
           spentMonthlyCents: 0,
@@ -3796,6 +3812,11 @@ export function accessRoutes(
           lastHeartbeatAt: null,
           metadata: null
         });
+        if (adapterType === "openclaw_gateway") {
+          await openClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow(
+            created,
+          );
+        }
         createdAgentId = created.id;
         await access.ensureMembership(
           companyId,

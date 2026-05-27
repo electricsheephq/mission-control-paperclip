@@ -1070,6 +1070,94 @@ describe.sequential("agent permission routes", () => {
     );
   });
 
+  it("uses the reporting OpenClaw Gateway manager for commandless process-default hires", async () => {
+    const managerAgentId = "55555555-5555-4555-8555-555555555555";
+    const managerGatewayConfig = {
+      url: "ws://127.0.0.1:18790",
+      headers: {
+        "x-openclaw-token": "manager-gateway-token-1234567890",
+      },
+      paperclipApiUrl: "http://127.0.0.1:3100",
+      timeoutSec: 7200,
+      waitTimeoutMs: 7_200_000,
+      agentId: "malory",
+      sessionKeyStrategy: "fixed",
+    };
+    mockAgentService.getById.mockImplementation(async (id: string) => (
+      id === managerAgentId
+        ? {
+            ...baseAgent,
+            id: managerAgentId,
+            name: "Malory",
+            adapterType: "openclaw_gateway",
+            adapterConfig: managerGatewayConfig,
+          }
+        : baseAgent
+    ));
+    mockAgentService.create.mockImplementation(async (createdCompanyId: string, input: Record<string, unknown>) => ({
+      ...baseAgent,
+      id: agentId,
+      companyId: createdCompanyId,
+      name: input.name,
+      role: input.role,
+      reportsTo: input.reportsTo ?? null,
+      capabilities: input.capabilities ?? null,
+      adapterType: input.adapterType,
+      adapterConfig: input.adapterConfig,
+      runtimeConfig: input.runtimeConfig,
+      permissions: input.permissions ?? {},
+    }));
+
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "session",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .post(`/api/companies/${companyId}/agent-hires`)
+      .send({
+        name: "Sales Systems Builder",
+        role: "general",
+        reportsTo: managerAgentId,
+        capabilities: "Builds sales workflows.",
+        adapterConfig: {},
+      }));
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    const createInput = mockAgentService.create.mock.calls[0]?.[1] as {
+      adapterType?: string;
+      adapterConfig?: Record<string, unknown>;
+      runtimeConfig?: Record<string, unknown>;
+    };
+    expect(createInput.adapterType).toBe("openclaw_gateway");
+    expect(createInput.adapterConfig).toMatchObject({
+      url: "ws://127.0.0.1:18790",
+      headers: { "x-openclaw-token": "manager-gateway-token-1234567890" },
+      paperclipApiUrl: "http://127.0.0.1:3100",
+      timeoutSec: 7200,
+      waitTimeoutMs: 7_200_000,
+      sessionKeyStrategy: "issue",
+      agentId: "sales-systems-builder",
+      openclawWorkspacePath: "~/.openclaw/workspace-sales-systems-builder",
+      claimedApiKeyPath: "~/.openclaw/workspace-sales-systems-builder/paperclip-claimed-api-key.json",
+    });
+    expect(createInput.runtimeConfig).toMatchObject({
+      heartbeat: {
+        maxConcurrentRuns: OPENCLAW_GATEWAY_DEFAULT_MAX_CONCURRENT_RUNS,
+        gatewayMaxConcurrentRuns: OPENCLAW_GATEWAY_DEFAULT_SHARED_MAX_CONCURRENT_RUNS,
+      },
+    });
+    expect(mockOpenClawProvisioning.ensureOpenClawAgentForAdapterConfigOrThrow).toHaveBeenCalledWith(
+      expect.objectContaining({ agentId: "sales-systems-builder" }),
+    );
+    expect(mockOpenClawProvisioning.ensureOpenClawProvisionedForAgentOrThrow).toHaveBeenCalledWith(
+      expect.objectContaining({ adapterType: "openclaw_gateway" }),
+    );
+  });
+
   it("derives same-gateway OpenClaw child agent ids without regex-heavy normalization", async () => {
     mockAccessService.hasPermission.mockResolvedValue(true);
     mockAgentService.getById.mockResolvedValue({

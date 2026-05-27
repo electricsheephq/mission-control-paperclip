@@ -999,6 +999,49 @@ export function agentRoutes(
     return next;
   }
 
+  function processAdapterConfigHasCommand(adapterConfig: Record<string, unknown>): boolean {
+    return Boolean(asNonEmptyString(adapterConfig.command));
+  }
+
+  async function resolveOpenClawGatewayInheritanceAgent(input: {
+    companyId: string;
+    reportsTo: string | null | undefined;
+    actorAgent: NonNullable<Awaited<ReturnType<typeof svc.getById>>> | null;
+  }): Promise<NonNullable<Awaited<ReturnType<typeof svc.getById>>> | null> {
+    if (input.actorAgent?.adapterType === "openclaw_gateway") return input.actorAgent;
+    if (!input.reportsTo) return null;
+    const manager = await svc.getById(input.reportsTo);
+    if (!manager || manager.companyId !== input.companyId) return null;
+    return manager.adapterType === "openclaw_gateway" ? manager : null;
+  }
+
+  async function resolveCreateAdapterSelection(input: {
+    companyId: string;
+    adapterType: string;
+    adapterConfig: Record<string, unknown>;
+    reportsTo: string | null | undefined;
+    actorAgent: NonNullable<Awaited<ReturnType<typeof svc.getById>>> | null;
+  }): Promise<{
+    adapterType: string;
+    inheritanceAgent: NonNullable<Awaited<ReturnType<typeof svc.getById>>> | null;
+  }> {
+    const inheritanceAgent = await resolveOpenClawGatewayInheritanceAgent({
+      companyId: input.companyId,
+      reportsTo: input.reportsTo,
+      actorAgent: input.actorAgent,
+    });
+
+    if (
+      input.adapterType === "process" &&
+      !processAdapterConfigHasCommand(input.adapterConfig) &&
+      inheritanceAgent
+    ) {
+      return { adapterType: "openclaw_gateway", inheritanceAgent };
+    }
+
+    return { adapterType: input.adapterType, inheritanceAgent: inheritanceAgent ?? input.actorAgent };
+  }
+
   function preserveInstructionsBundleConfig(
     existingAdapterConfig: Record<string, unknown>,
     nextAdapterConfig: Record<string, unknown>,
@@ -2171,10 +2214,18 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawHireAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, hireInput.runtimeConfig);
+    const hireAdapterSelection = await resolveCreateAdapterSelection({
+      companyId,
+      adapterType: hireInput.adapterType,
+      adapterConfig: rawHireAdapterConfig,
+      reportsTo: hireInput.reportsTo,
+      actorAgent,
+    });
+    hireInput.adapterType = hireAdapterSelection.adapterType;
     const inheritedHireAdapterConfig = applySameGatewayOpenClawInheritance({
       adapterType: hireInput.adapterType,
       adapterConfig: rawHireAdapterConfig,
-      actorAgent,
+      actorAgent: hireAdapterSelection.inheritanceAgent,
     });
     let requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       hireInput.adapterType,
@@ -2185,7 +2236,7 @@ export function agentRoutes(
       requestedName: hireInput.name,
       adapterType: hireInput.adapterType,
       adapterConfig: requestedAdapterConfig,
-      actorAgent,
+      actorAgent: hireAdapterSelection.inheritanceAgent,
     });
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
@@ -2381,10 +2432,18 @@ export function agentRoutes(
     );
     assertNoAgentAdapterConfigMutation(req, rawCreateAdapterConfig);
     assertNoAgentRuntimeConfigAdapterConfigMutation(req, createInput.runtimeConfig);
+    const createAdapterSelection = await resolveCreateAdapterSelection({
+      companyId,
+      adapterType: createInput.adapterType,
+      adapterConfig: rawCreateAdapterConfig,
+      reportsTo: createInput.reportsTo,
+      actorAgent,
+    });
+    createInput.adapterType = createAdapterSelection.adapterType;
     const inheritedCreateAdapterConfig = applySameGatewayOpenClawInheritance({
       adapterType: createInput.adapterType,
       adapterConfig: rawCreateAdapterConfig,
-      actorAgent,
+      actorAgent: createAdapterSelection.inheritanceAgent,
     });
     let requestedAdapterConfig = applyCreateDefaultsByAdapterType(
       createInput.adapterType,
@@ -2395,7 +2454,7 @@ export function agentRoutes(
       requestedName: createInput.name,
       adapterType: createInput.adapterType,
       adapterConfig: requestedAdapterConfig,
-      actorAgent,
+      actorAgent: createAdapterSelection.inheritanceAgent,
     });
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
