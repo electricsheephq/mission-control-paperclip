@@ -26,7 +26,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
-  // codeql[js/request-forgery]: API client requests are constrained to same-origin /api paths by apiPath().
+  // API client requests are constrained to same-origin /api paths by apiPath().
+  // codeql[js/request-forgery]
   const res = await fetch(apiPath(path), {
     headers,
     credentials: "include",

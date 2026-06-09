@@ -188,13 +188,15 @@ export async function inspectPluginLocalFolder(input: {
   }
 
   try {
-    // codeql[js/path-injection]: config.path is an explicit local-folder root configured by an authorized operator; child access is separately traversal- and symlink-checked.
+    // config.path is an explicit local-folder root configured by an authorized operator; child access is separately traversal- and symlink-checked.
+    // codeql[js/path-injection]
     const stat = await fs.stat(configuredPath);
     if (!stat.isDirectory()) {
       problems.push(problem("not_directory", "Configured local folder path is not a directory.", configuredPath));
       markRequiredPathsMissing();
     } else {
-      // codeql[js/path-injection]: configuredPath is the operator-configured local-folder root and is canonicalized before child containment checks.
+      // configuredPath is the operator-configured local-folder root and is canonicalized before child containment checks.
+      // codeql[js/path-injection]
       realPath = await fs.realpath(configuredPath);
       try {
         await fs.access(realPath, fsConstants.R_OK);

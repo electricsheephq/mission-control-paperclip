@@ -114,7 +114,8 @@ function readAdapterPackageVersionFromDisk(record: AdapterPluginRecord): string 
     const pkgDir = resolveAdapterPackageDir(record);
     const pkgJsonPath = resolvePathWithinRoot(pkgDir, "package.json");
     if (!pkgJsonPath) return undefined;
-    // codeql[js/path-injection]: package.json is resolved beneath the installed adapter package directory before reading version metadata.
+    // package.json is resolved beneath the installed adapter package directory before reading version metadata.
+    // codeql[js/path-injection]
     const raw = fs.readFileSync(pkgJsonPath, "utf-8");
     const v = JSON.parse(raw).version;
     return typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
@@ -344,7 +345,8 @@ export function adapterRoutes() {
           const pkgJsonPath = resolvePathWithinRoot(moduleRoot, path.join(canonicalName, "package.json"));
           if (!pkgJsonPath) throw new Error("Installed package path escaped adapter plugin root.");
           const pkgContent = await import("node:fs/promises");
-          // codeql[js/path-injection]: canonicalName is validated as an npm package name, then resolved beneath the managed node_modules root.
+          // canonicalName is validated as an npm package name, then resolved beneath the managed node_modules root.
+          // codeql[js/path-injection]
           const pkgRaw = await pkgContent.readFile(pkgJsonPath, "utf-8");
           const pkg = JSON.parse(pkgRaw);
           const v = pkg.version;
@@ -357,7 +359,8 @@ export function adapterRoutes() {
         // Local path — normalize (e.g., Windows → WSL) and use the resolved path
         moduleLocalPath = path.resolve(await normalizeLocalPath(packageName));
         try {
-          // codeql[js/path-injection]: local adapter paths require instance-admin access and are resolved before reading their package metadata.
+          // local adapter paths require instance-admin access and are resolved before reading their package metadata.
+          // codeql[js/path-injection]
           const pkgRaw = await readFile(path.join(moduleLocalPath, "package.json"), "utf-8");
           const v = JSON.parse(pkgRaw).version;
           if (typeof v === "string" && v.trim().length > 0) {

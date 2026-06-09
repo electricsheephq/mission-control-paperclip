@@ -9,7 +9,7 @@ import { httpLogger, errorHandler } from "./middleware/index.js";
 import { actorMiddleware } from "./middleware/auth.js";
 import { boardMutationGuard } from "./middleware/board-mutation-guard.js";
 import { privateHostnameGuard, resolvePrivateHostnameAllowSet } from "./middleware/private-hostname-guard.js";
-import { createApiRateLimiter } from "./middleware/api-rate-limit.js";
+import { createApiRateLimiter, createPreAuthApiRateLimiter } from "./middleware/api-rate-limit.js";
 import { healthRoutes } from "./routes/health.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
@@ -183,6 +183,7 @@ export async function createApp(
       bindHost: opts.bindHost,
     }),
   );
+  app.use("/api", createPreAuthApiRateLimiter());
   app.use(
     actorMiddleware(db, {
       deploymentMode: opts.deploymentMode,

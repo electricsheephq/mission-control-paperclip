@@ -15,6 +15,21 @@ function actorRateLimitKey(req: Request): string {
   return `ip:${ipKeyGenerator(req.ip ?? req.socket.remoteAddress ?? "unknown")}`;
 }
 
+function ipRateLimitKey(req: Request): string {
+  return ipKeyGenerator(req.ip ?? req.socket.remoteAddress ?? "unknown");
+}
+
+export function createPreAuthApiRateLimiter() {
+  return rateLimit({
+    windowMs: API_RATE_LIMIT_WINDOW_MS,
+    limit: API_RATE_LIMIT_MAX_REQUESTS,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    keyGenerator: ipRateLimitKey,
+    skip: (req) => req.method === "GET" && req.path === "/health",
+  });
+}
+
 export function createApiRateLimiter() {
   return rateLimit({
     windowMs: API_RATE_LIMIT_WINDOW_MS,

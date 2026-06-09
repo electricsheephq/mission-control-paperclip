@@ -49,7 +49,8 @@ export async function ghFetch(url: string, init?: RequestInit): Promise<Response
   }
   safeGitHubHostname(parsed.hostname);
   try {
-    // codeql[js/request-forgery]: ghFetch rejects non-HTTPS, loopback, IP, local, and single-label non-GitHub hosts before dispatch.
+    // ghFetch rejects non-HTTPS, loopback, IP, local, and single-label non-GitHub hosts before dispatch.
+    // codeql[js/request-forgery]
     return await fetch(parsed.toString(), init);
   } catch {
     throw unprocessable(`Could not connect to ${parsed.hostname} — ensure the URL points to a GitHub or GitHub Enterprise instance`);

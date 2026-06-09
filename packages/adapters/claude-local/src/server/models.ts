@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { AdapterModel } from "@paperclipai/adapter-utils";
 import { models as DIRECT_MODELS } from "../index.js";
 
@@ -16,7 +15,7 @@ const BEDROCK_MODELS: AdapterModel[] = [
   { id: "us.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
 ];
 
-let cached: { keyFingerprint: string; baseUrl: string; expiresAt: number; models: AdapterModel[] } | null = null;
+let cached: { apiKey: string; baseUrl: string; expiresAt: number; models: AdapterModel[] } | null = null;
 
 function isBedrockEnv(): boolean {
   return (
@@ -25,12 +24,6 @@ function isBedrockEnv(): boolean {
     (typeof process.env.ANTHROPIC_BEDROCK_BASE_URL === "string" &&
       process.env.ANTHROPIC_BEDROCK_BASE_URL.trim().length > 0)
   );
-}
-
-function fingerprint(apiKey: string): string {
-  // codeql[js/weak-sensitive-data-hashing]: this is a short cache fingerprint for a high-entropy API key, not credential storage or authentication.
-  const digest = createHash("sha256").update(apiKey).digest("base64url").slice(0, 16);
-  return `${apiKey.length}:${digest}`;
 }
 
 function dedupeModels(models: AdapterModel[]): AdapterModel[] {
@@ -111,11 +104,10 @@ async function loadClaudeModels(options?: { forceRefresh?: boolean }): Promise<A
 
   const now = Date.now();
   const baseUrl = resolveAnthropicBaseUrl();
-  const keyFingerprint = fingerprint(apiKey);
   if (
     options?.forceRefresh !== true &&
     cached &&
-    cached.keyFingerprint === keyFingerprint &&
+    cached.apiKey === apiKey &&
     cached.baseUrl === baseUrl &&
     cached.expiresAt > now
   ) {
@@ -126,7 +118,7 @@ async function loadClaudeModels(options?: { forceRefresh?: boolean }): Promise<A
   if (fetched.length > 0) {
     const merged = mergedWithFallback(fetched);
     cached = {
-      keyFingerprint,
+      apiKey,
       baseUrl,
       expiresAt: now + ANTHROPIC_MODELS_CACHE_TTL_MS,
       models: merged,
@@ -134,7 +126,7 @@ async function loadClaudeModels(options?: { forceRefresh?: boolean }): Promise<A
     return merged;
   }
 
-  if (cached && cached.keyFingerprint === keyFingerprint && cached.baseUrl === baseUrl && cached.models.length > 0) {
+  if (cached && cached.apiKey === apiKey && cached.baseUrl === baseUrl && cached.models.length > 0) {
     return cached.models;
   }
 

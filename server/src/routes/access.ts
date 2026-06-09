@@ -155,6 +155,8 @@ function readSkillMarkdown(skillName: string): string | null {
   ].filter((candidate): candidate is string => Boolean(candidate));
   for (const skillPath of candidates) {
     try {
+      // Skill names are normalized to a single safe segment before resolving a SKILL.md candidate path.
+      // codeql[js/path-injection]
       return fs.readFileSync(skillPath, "utf8");
     } catch {
       // Continue to next candidate.
@@ -967,6 +969,28 @@ function toInviteSummaryResponse(
       ? `${baseUrl}${skillIndexPath}`
       : skillIndexPath,
     inviteMessage
+  };
+}
+
+function toInviteCreatedResponse(
+  token: string,
+  invite: typeof invites.$inferSelect,
+  inviteSummary: ReturnType<typeof toInviteSummaryResponse>,
+  companyBranding: { name: string | null },
+) {
+  return {
+    id: invite.id,
+    token,
+    inviteType: invite.inviteType,
+    allowedJoinTypes: invite.allowedJoinTypes,
+    humanRole: extractInviteHumanRole(invite),
+    expiresAt: invite.expiresAt.toISOString(),
+    invitePath: inviteSummary.invitePath,
+    inviteUrl: inviteSummary.inviteUrl,
+    companyName: companyBranding.name,
+    onboardingTextPath: inviteSummary.onboardingTextPath,
+    onboardingTextUrl: inviteSummary.onboardingTextUrl,
+    inviteMessage: inviteSummary.inviteMessage,
   };
 }
 
@@ -3234,16 +3258,7 @@ export function accessRoutes(
         created,
         companyBranding
       );
-      res.status(201).json({
-        ...created,
-        token,
-        invitePath: inviteSummary.invitePath,
-        inviteUrl: inviteSummary.inviteUrl,
-        companyName: companyBranding.name,
-        onboardingTextPath: inviteSummary.onboardingTextPath,
-        onboardingTextUrl: inviteSummary.onboardingTextUrl,
-        inviteMessage: inviteSummary.inviteMessage
-      });
+      res.status(201).json(toInviteCreatedResponse(token, created, inviteSummary, companyBranding));
     }
   );
 
@@ -3288,16 +3303,7 @@ export function accessRoutes(
         created,
         companyBranding
       );
-      res.status(201).json({
-        ...created,
-        token,
-        invitePath: inviteSummary.invitePath,
-        inviteUrl: inviteSummary.inviteUrl,
-        companyName: companyBranding.name,
-        onboardingTextPath: inviteSummary.onboardingTextPath,
-        onboardingTextUrl: inviteSummary.onboardingTextUrl,
-        inviteMessage: inviteSummary.inviteMessage
-      });
+      res.status(201).json(toInviteCreatedResponse(token, created, inviteSummary, companyBranding));
     }
   );
 

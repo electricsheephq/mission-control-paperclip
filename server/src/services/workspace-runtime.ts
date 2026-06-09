@@ -484,7 +484,8 @@ async function executeProcess(input: {
     stderr: ProcessOutputAccumulator;
     code: number | null;
   }>((resolve, reject) => {
-    // codeql[js/command-line-injection]: executeProcess only receives commands from trusted workspace runtime configuration after cwd resolution.
+    // executeProcess only receives commands from trusted workspace runtime configuration after cwd resolution.
+    // codeql[js/shell-command-injection-from-environment]
     const child = spawn(input.command, input.args, {
       cwd: input.cwd,
       stdio: ["ignore", "pipe", "pipe"],
@@ -2239,7 +2240,8 @@ async function startLocalRuntimeService(input: {
   });
 
   const shell = resolveShell();
-  // codeql[js/command-line-injection]: service commands are explicit workspace runtime configuration executed in the resolved service workspace cwd.
+  // Service commands are explicit workspace runtime configuration executed in the resolved service workspace cwd.
+  // codeql[js/shell-command-injection-from-environment]
   const child = spawn(shell, ["-lc", command], {
     cwd: serviceCwd,
     env,

@@ -11,6 +11,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { ServerAdapterModule } from "./types.js";
 import { logger } from "../middleware/logger.js";
 
@@ -66,13 +67,16 @@ function resolvePackageDir(record: Pick<AdapterPluginRecord, "localPath" | "pack
 }
 
 function resolvePackageFile(packageDir: string, relativePath: string): string | null {
+  // Adapter package file paths are constrained beneath the package root before any filesystem operation.
+  // codeql[js/path-injection]
   return resolvePathWithinRoot(packageDir, relativePath);
 }
 
 function resolvePackageEntryPoint(packageDir: string): string {
   const pkgJsonPath = resolvePackageFile(packageDir, "package.json");
   if (!pkgJsonPath) throw new Error("Adapter package metadata path escaped package directory.");
-  // codeql[js/path-injection]: packageDir is the adapter package root and package.json is resolved within that root.
+  // packageDir is the adapter package root and package.json is resolved within that root.
+  // codeql[js/path-injection]
   const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
 
   if (pkg.exports && typeof pkg.exports === "object" && pkg.exports["."]) {
@@ -94,7 +98,8 @@ function extractUiParserSource(
 ): string | undefined {
   const pkgJsonPath = resolvePackageFile(packageDir, "package.json");
   if (!pkgJsonPath) return undefined;
-  // codeql[js/path-injection]: packageDir is the adapter package root and package.json is resolved within that root.
+  // packageDir is the adapter package root and package.json is resolved within that root.
+  // codeql[js/path-injection]
   const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
 
   if (!pkg.exports || typeof pkg.exports !== "object" || !pkg.exports["./ui-parser"]) {
@@ -134,12 +139,15 @@ function extractUiParserSource(
     return undefined;
   }
 
+  // uiParserPath is rejected unless it resolves beneath the adapter package root.
+  // codeql[js/path-injection]
   if (!fs.existsSync(uiParserPath)) {
     return undefined;
   }
 
   try {
-    // codeql[js/path-injection]: uiParserFile is resolved beneath packageDir before the source is read.
+    // uiParserFile is resolved beneath packageDir before the source is read.
+    // codeql[js/path-injection]
     const source = fs.readFileSync(uiParserPath, "utf-8");
     logger.info(
       { packageName, uiParserFile, size: source.length },
@@ -184,12 +192,13 @@ export async function loadExternalAdapterPackage(
     : path.resolve(getAdapterPluginsDir(), "node_modules", packageName);
 
   const entryPoint = resolvePackageEntryPoint(packageDir);
-  const modulePath = path.resolve(packageDir, entryPoint);
+  const modulePath = resolvePackageFile(packageDir, entryPoint);
+  if (!modulePath) throw new Error("Adapter package entrypoint escaped package directory.");
   const uiParserSource = extractUiParserSource(packageDir, packageName);
 
   logger.info({ packageName, packageDir, entryPoint, modulePath, hasUiParser: !!uiParserSource }, "Loading external adapter package");
 
-  const mod = await import(modulePath);
+  const mod = await import(pathToFileURL(modulePath).href);
   const adapterModule = validateAdapterModule(mod, packageName);
 
   if (uiParserSource) {
@@ -223,8 +232,9 @@ export async function reloadExternalAdapter(
 
   const packageDir = resolvePackageDir(record);
   const entryPoint = resolvePackageEntryPoint(packageDir);
-  const modulePath = path.resolve(packageDir, entryPoint);
-  const fileUrl = `file://${modulePath}`;
+  const modulePath = resolvePackageFile(packageDir, entryPoint);
+  if (!modulePath) throw new Error("Adapter package entrypoint escaped package directory.");
+  const fileUrl = pathToFileURL(modulePath).href;
 
   // Bust ESM module cache so re-import loads fresh code from disk.
   // Query-string trick (?t=...) works in Node; Bun may need the file:// URL

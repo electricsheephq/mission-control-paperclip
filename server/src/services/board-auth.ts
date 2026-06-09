@@ -17,7 +17,8 @@ export const CLI_AUTH_CHALLENGE_TTL_MS = 10 * 60 * 1000;
 export type CliAuthChallengeStatus = "pending" | "approved" | "cancelled" | "expired";
 
 export function hashBearerToken(token: string) {
-  // codeql[js/weak-sensitive-data-hashing]: board API tokens are high-entropy random bearer tokens; SHA-256 is used for deterministic lookup, not password storage.
+  // Board API tokens are high-entropy random bearer tokens; SHA-256 is used for deterministic lookup, not password storage.
+  // codeql[js/insufficient-password-hash]
   return createHash("sha256").update(token).digest("hex");
 }
 
