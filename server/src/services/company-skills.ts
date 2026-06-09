@@ -40,6 +40,7 @@ import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { normalizePortablePath } from "./portable-path.js";
+import { assertPathWithinRoot, resolvePathWithinRoot } from "./path-containment.js";
 import {
   copyCatalogSkillFile,
   getCatalogPackageMetadata,
@@ -1540,13 +1541,12 @@ function resolveLocalSkillFilePath(skill: CompanySkill, relativePath: string) {
   const normalized = normalizePortablePath(relativePath);
   const skillDir = normalizeSkillDirectory(skill);
   if (skillDir) {
-    return path.resolve(skillDir, normalized);
+    return resolvePathWithinRoot(skillDir, normalized);
   }
 
   if (!skill.sourceLocator) return null;
   const fallbackRoot = path.resolve(skill.sourceLocator);
-  const directPath = path.resolve(fallbackRoot, normalized);
-  return directPath;
+  return resolvePathWithinRoot(fallbackRoot, normalized);
 }
 
 async function collectSkillFileBytes(skillDir: string): Promise<{
@@ -1560,7 +1560,16 @@ async function collectSkillFileBytes(skillDir: string): Promise<{
   async function visit(current: string) {
     const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []);
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      const absolutePath = path.resolve(current, entry.name);
+      const absolutePath = assertPathWithinRoot(root, path.resolve(current, entry.name));
+      if (!absolutePath) {
+        findings.push({
+          code: "path_out_of_tree",
+          severity: "error",
+          message: "Resolved file path is outside the skill directory.",
+          path: entry.name,
+        });
+        continue;
+      }
       const relativePath = normalizePortablePath(path.relative(root, absolutePath));
       if (!relativePath || relativePath.split("/").includes("..") || path.isAbsolute(relativePath)) {
         findings.push({
@@ -2833,7 +2842,10 @@ export function companySkillService(db: Db) {
         : `${packageDir}/${entry.path}`;
       const content = normalizedFiles[sourcePath];
       if (typeof content !== "string") continue;
-      const targetPath = path.resolve(skillDir, entry.path);
+      const targetPath = resolvePathWithinRoot(skillDir, entry.path);
+      if (!targetPath) {
+        throw unprocessable(`Skill file path is invalid: ${entry.path}`);
+      }
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
       await fs.writeFile(targetPath, content, "utf8");
     }
@@ -2890,12 +2902,11 @@ export function companySkillService(db: Db) {
     const replacement = await createDirectoryReplacement(skillDir);
     try {
       for (const entry of catalogSkill.files) {
-        const targetPath = path.resolve(replacement.stagingDir, entry.path);
-        if (targetPath !== replacement.stagingDir && !targetPath.startsWith(`${replacement.stagingDir}${path.sep}`)) {
+        const targetPath = resolvePathWithinRoot(replacement.stagingDir, entry.path);
+        if (!targetPath) {
           throw unprocessable(`Catalog file path is invalid: ${entry.path}`);
         }
-        await fs.mkdir(path.dirname(targetPath), { recursive: true });
-        await copyCatalogSkillFile(catalogSkill.id, entry.path, targetPath);
+        await copyCatalogSkillFile(catalogSkill.id, entry.path, replacement.stagingDir);
       }
       await replacement.commit();
     } catch (error) {
@@ -2920,12 +2931,11 @@ export function companySkillService(db: Db) {
     const replacement = await createDirectoryReplacement(snapshotDir);
     try {
       for (const entry of catalogSkill.files) {
-        const targetPath = path.resolve(replacement.stagingDir, entry.path);
-        if (targetPath !== replacement.stagingDir && !targetPath.startsWith(`${replacement.stagingDir}${path.sep}`)) {
+        const targetPath = resolvePathWithinRoot(replacement.stagingDir, entry.path);
+        if (!targetPath) {
           throw unprocessable(`Catalog file path is invalid: ${entry.path}`);
         }
-        await fs.mkdir(path.dirname(targetPath), { recursive: true });
-        await copyCatalogSkillFile(catalogSkill.id, entry.path, targetPath);
+        await copyCatalogSkillFile(catalogSkill.id, entry.path, replacement.stagingDir);
       }
       await replacement.commit();
     } catch (error) {
@@ -2941,8 +2951,8 @@ export function companySkillService(db: Db) {
     const replacement = await createDirectoryReplacement(targetDir);
     try {
       for (const file of files) {
-        const targetPath = path.resolve(replacement.stagingDir, file.path);
-        if (targetPath !== replacement.stagingDir && !targetPath.startsWith(`${replacement.stagingDir}${path.sep}`)) {
+        const targetPath = resolvePathWithinRoot(replacement.stagingDir, file.path);
+        if (!targetPath) {
           throw unprocessable(`Skill file path is invalid: ${file.path}`);
         }
         await fs.mkdir(path.dirname(targetPath), { recursive: true });
@@ -3100,7 +3110,11 @@ export function companySkillService(db: Db) {
     if (!materializedDir || !originSnapshotLocator) {
       throw unprocessable("Catalog install did not materialize pinned files.");
     }
-    const markdown = await fs.readFile(path.join(originSnapshotLocator, catalogSkill.entrypoint), "utf8");
+    const markdownPath = resolvePathWithinRoot(originSnapshotLocator, catalogSkill.entrypoint);
+    if (!markdownPath) {
+      throw unprocessable(`Catalog entrypoint path is invalid: ${catalogSkill.entrypoint}`);
+    }
+    const markdown = await fs.readFile(markdownPath, "utf8");
     const metadata = buildCatalogSkillMetadata(catalogSkill, existingByKey, originSnapshotLocator);
     const values = {
       companyId,
@@ -3166,7 +3180,10 @@ export function companySkillService(db: Db) {
       const detail = await readFile(companyId, skill.id, normalizedPath).catch(() => null);
       const content = detail?.content ?? (normalizedPath === "SKILL.md" ? skill.markdown : null);
       if (content === null) continue;
-      const targetPath = path.resolve(skillDir, entry.path);
+      const targetPath = resolvePathWithinRoot(skillDir, normalizedPath);
+      if (!targetPath) {
+        throw unprocessable(`Skill file path is invalid: ${entry.path}`);
+      }
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
       await fs.writeFile(targetPath, content, "utf8");
       if (normalizedPath === "SKILL.md") wroteSkillFile = true;

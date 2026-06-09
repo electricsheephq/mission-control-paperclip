@@ -12,6 +12,7 @@ import type {
 import { HttpError, conflict, notFound, unprocessable } from "../errors.js";
 import { ghFetch, resolveRawGitHubUrl } from "./github-fetch.js";
 import { normalizePortablePath } from "./portable-path.js";
+import { resolvePathWithinRoot } from "./path-containment.js";
 
 interface CatalogManifestFile {
   packageName: string;
@@ -112,9 +113,9 @@ async function fetchCatalogSourceFile(
   const source = skill.source;
   if (!source) {
     const packageRoot = resolveCatalogPackageRoot();
-    const absolutePath = path.resolve(packageRoot, skill.path, relativePath);
     const skillRoot = path.resolve(packageRoot, skill.path);
-    if (absolutePath !== skillRoot && !absolutePath.startsWith(`${skillRoot}${path.sep}`)) {
+    const absolutePath = resolvePathWithinRoot(skillRoot, relativePath);
+    if (!absolutePath) {
       throw notFound("Catalog skill file not found");
     }
     return fs.readFile(absolutePath);
@@ -224,7 +225,7 @@ export async function readCatalogSkillFile(
   };
 }
 
-export async function copyCatalogSkillFile(reference: string, relativePath: string, targetPath: string): Promise<void> {
+export async function copyCatalogSkillFile(reference: string, relativePath: string, targetRoot: string): Promise<void> {
   const skill = getCatalogSkillOrThrow(reference);
   const normalizedPath = normalizePortablePath(relativePath || "SKILL.md");
   const fileEntry = skill.files.find((entry) => entry.path === normalizedPath);
@@ -232,6 +233,11 @@ export async function copyCatalogSkillFile(reference: string, relativePath: stri
     throw notFound("Catalog skill file not found");
   }
 
+  const targetPath = resolvePathWithinRoot(targetRoot, normalizedPath);
+  if (!targetPath) {
+    throw unprocessable(`Catalog file path is invalid: ${relativePath}`);
+  }
+  await fs.mkdir(path.dirname(targetPath), { recursive: true });
   await fs.writeFile(targetPath, await readCatalogFileBytes(skill, normalizedPath));
 }
 

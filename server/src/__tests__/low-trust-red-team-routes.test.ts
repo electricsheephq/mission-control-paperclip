@@ -865,6 +865,12 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       });
       expectNoCanary(bogusRunContext.body, fixture.canaries.raw);
 
+      await db.update(heartbeatRuns).set({
+        status: "succeeded",
+        finishedAt: new Date(),
+        updatedAt: new Date(),
+      }).where(eq(heartbeatRuns.id, fixture.runs.standard.id));
+
       await db.update(agents).set({
         status: "idle",
         adapterType: "openclaw_gateway",

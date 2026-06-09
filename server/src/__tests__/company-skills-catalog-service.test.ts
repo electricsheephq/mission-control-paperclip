@@ -124,8 +124,10 @@ describeEmbeddedPostgres("companySkillService.installFromCatalog", () => {
       language: "markdown",
       markdown: true,
     }));
-    mockCatalogService.copyCatalogSkillFile.mockImplementation(async (_ref: string, filePath: string, targetPath: string) => {
+    mockCatalogService.copyCatalogSkillFile.mockImplementation(async (_ref: string, filePath: string, targetRoot: string) => {
       const content = filePath === "SKILL.md" ? sampleSkillMarkdown : sampleReferenceMarkdown;
+      const targetPath = path.join(targetRoot, filePath);
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
       await fs.writeFile(targetPath, content, "utf8");
     });
   });
@@ -196,7 +198,9 @@ describeEmbeddedPostgres("companySkillService.installFromCatalog", () => {
       contentHash: contentHash(assetFiles),
     };
     mockCatalogService.getCatalogSkillOrThrow.mockReturnValue(assetCatalogSkill);
-    mockCatalogService.copyCatalogSkillFile.mockImplementation(async (_ref: string, filePath: string, targetPath: string) => {
+    mockCatalogService.copyCatalogSkillFile.mockImplementation(async (_ref: string, filePath: string, targetRoot: string) => {
+      const targetPath = path.join(targetRoot, filePath);
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
       if (filePath === "assets/logo.png") {
         await fs.writeFile(targetPath, sampleAssetBytes);
         return;
@@ -236,7 +240,9 @@ describeEmbeddedPostgres("companySkillService.installFromCatalog", () => {
       contentHash: contentHash(scriptFiles),
     };
     mockCatalogService.getCatalogSkillOrThrow.mockReturnValue(scriptCatalogSkill);
-    mockCatalogService.copyCatalogSkillFile.mockImplementation(async (_ref: string, filePath: string, targetPath: string) => {
+    mockCatalogService.copyCatalogSkillFile.mockImplementation(async (_ref: string, filePath: string, targetRoot: string) => {
+      const targetPath = path.join(targetRoot, filePath);
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
       if (filePath === "scripts/run.py") {
         await fs.writeFile(targetPath, script, "utf8");
         return;

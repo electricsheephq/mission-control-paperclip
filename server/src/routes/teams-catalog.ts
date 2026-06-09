@@ -1,4 +1,4 @@
-import { Router, type Request } from "express";
+import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   catalogTeamInstallSchema,
@@ -7,6 +7,7 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { accessService, agentService } from "../services/index.js";
+import { createCompanySearchRateLimiter } from "../services/company-search-rate-limit.js";
 import {
   getCatalogTeamOrThrow,
   listCatalogTeams,
@@ -15,6 +16,10 @@ import {
 } from "../services/teams-catalog.js";
 import { forbidden } from "../errors.js";
 import { assertAuthenticated, assertCompanyAccess, getActorInfo } from "./authz.js";
+
+const catalogFileRateLimiter = createCompanySearchRateLimiter({
+  maxRequests: 120,
+});
 
 export function teamsCatalogRoutes(db: Db) {
   const router = Router();
@@ -31,6 +36,34 @@ export function teamsCatalogRoutes(db: Db) {
     if (typeof value === "string") return value;
     if (Array.isArray(value) && typeof value[0] === "string") return value[0];
     return undefined;
+  }
+
+  function catalogRateLimitActor(req: Request) {
+    if (req.actor.type === "agent") {
+      return {
+        companyId: "teams-catalog",
+        actorType: "agent" as const,
+        actorId: req.actor.agentId ?? req.actor.keyId ?? "unknown-agent",
+      };
+    }
+    return {
+      companyId: "teams-catalog",
+      actorType: "board" as const,
+      actorId: req.actor.userId ?? req.actor.source ?? "board",
+    };
+  }
+
+  function consumeCatalogFileRateLimit(req: Request, res: Response) {
+    const rateLimit = catalogFileRateLimiter.consume(catalogRateLimitActor(req));
+    res.setHeader("X-RateLimit-Limit", String(rateLimit.limit));
+    res.setHeader("X-RateLimit-Remaining", String(rateLimit.remaining));
+    if (rateLimit.allowed) return true;
+    res.setHeader("Retry-After", String(rateLimit.retryAfterSeconds));
+    res.status(429).json({
+      error: "Catalog file rate limit exceeded",
+      retryAfterSeconds: rateLimit.retryAfterSeconds,
+    });
+    return false;
   }
 
   async function assertCanInstallCatalogTeam(req: Request, companyId: string) {
@@ -74,6 +107,7 @@ export function teamsCatalogRoutes(db: Db) {
 
   router.get("/teams/catalog/:catalogId/files", async (req, res) => {
     assertAuthenticated(req);
+    if (!consumeCatalogFileRateLimit(req, res)) return;
     const catalogRef = firstQueryString(req.query.ref) ?? (req.params.catalogId as string);
     const relativePath = firstQueryString(req.query.path) ?? "TEAM.md";
     res.json(await readCatalogTeamFile(catalogRef, relativePath));
