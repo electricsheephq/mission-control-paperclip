@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { and, eq, gt, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -13,13 +13,12 @@ import { conflict, forbidden, notFound } from "../errors.js";
 
 export const BOARD_API_KEY_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const CLI_AUTH_CHALLENGE_TTL_MS = 10 * 60 * 1000;
+const BOARD_API_TOKEN_HASH_SALT = "paperclip-board-api-token-v1";
 
 export type CliAuthChallengeStatus = "pending" | "approved" | "cancelled" | "expired";
 
 export function hashBearerToken(token: string) {
-  // Board API tokens are high-entropy random bearer tokens; SHA-256 is used for deterministic lookup, not password storage.
-  // codeql[js/insufficient-password-hash]
-  return createHash("sha256").update(token).digest("hex");
+  return `scrypt:v1:${scryptSync(token, BOARD_API_TOKEN_HASH_SALT, 32).toString("hex")}`;
 }
 
 export function tokenHashesMatch(left: string, right: string) {

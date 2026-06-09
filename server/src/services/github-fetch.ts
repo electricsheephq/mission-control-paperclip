@@ -3,7 +3,19 @@ import { unprocessable } from "../errors.js";
 
 function isGitHubDotCom(hostname: string) {
   const h = hostname.toLowerCase();
-  return h === "github.com" || h === "www.github.com";
+  return h === "github.com" ||
+    h === "www.github.com" ||
+    h === "api.github.com" ||
+    h === "raw.githubusercontent.com";
+}
+
+function configuredGitHubEnterpriseHosts() {
+  return new Set(
+    (process.env.PAPERCLIP_GITHUB_ENTERPRISE_HOSTS ?? "")
+      .split(",")
+      .map((host) => host.trim().toLowerCase())
+      .filter(Boolean),
+  );
 }
 
 function safeGitHubHostname(hostname: string) {
@@ -15,10 +27,14 @@ function safeGitHubHostname(hostname: string) {
     normalized === "localhost" ||
     normalized.endsWith(".localhost") ||
     normalized.endsWith(".local") ||
-    isIP(normalized) !== 0 ||
-    (!isGitHubDotCom(normalized) && !normalized.includes("."))
+    isIP(normalized) !== 0
   ) {
     throw unprocessable("GitHub URL must use github.com or a valid HTTPS GitHub Enterprise hostname.");
+  }
+  if (!isGitHubDotCom(normalized) && !configuredGitHubEnterpriseHosts().has(normalized)) {
+    throw unprocessable(
+      "GitHub Enterprise host is not allowlisted. Set PAPERCLIP_GITHUB_ENTERPRISE_HOSTS to allow it.",
+    );
   }
   return normalized;
 }
