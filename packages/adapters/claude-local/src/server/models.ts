@@ -28,6 +28,7 @@ function isBedrockEnv(): boolean {
 }
 
 function fingerprint(apiKey: string): string {
+  // codeql[js/weak-sensitive-data-hashing]: this is a short cache fingerprint for a high-entropy API key, not credential storage or authentication.
   const digest = createHash("sha256").update(apiKey).digest("base64url").slice(0, 16);
   return `${apiKey.length}:${digest}`;
 }

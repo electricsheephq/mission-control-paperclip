@@ -64,7 +64,8 @@ export async function checkDependencies(files, token, repo, prNumber, baseRef, f
       ]) {
         if (!baseDeps.has(dep)) newPackages.add(dep);
       }
-    } catch {
+    } catch (error) {
+      debugDependencyCheck(`Skipping dependency diff for ${file.filename}: ${errorMessage(error)}`);
       // File may not exist on base — skip
     }
   }
@@ -79,6 +80,16 @@ export async function checkDependencies(files, token, repo, prNumber, baseRef, f
       `are less likely to be accepted — please check if existing deps cover this need.`,
     ],
   };
+}
+
+function debugDependencyCheck(message) {
+  if (process.env.DEBUG_PR_DEPENDENCIES === '1') {
+    console.warn(message);
+  }
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

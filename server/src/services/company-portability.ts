@@ -33,6 +33,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  collapseToDashKey,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
   PROJECT_ICON_NAMES,
@@ -41,6 +42,7 @@ import {
   ROUTINE_CONCURRENCY_POLICIES,
   ROUTINE_STATUSES,
   ROUTINE_TRIGGER_KINDS,
+  trimSlashes,
   ROUTINE_TRIGGER_SIGNING_MODES,
   deriveProjectUrlKey,
   envConfigSchema,
@@ -262,12 +264,19 @@ function normalizeExportPathSegment(value: string | null | undefined, preserveCa
   if (!value) return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
-  const normalized = trimmed
-    .replace(/[^A-Za-z0-9._-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
+  const normalized = collapseToDashKey(trimmed, {
+    lowercase: !preserveCase,
+    allowed: (char) => {
+      const comparable = preserveCase ? char.toLowerCase() : char;
+      return (comparable >= "a" && comparable <= "z") ||
+        (comparable >= "0" && comparable <= "9") ||
+        char === "_" ||
+        char === "." ||
+        char === "-";
+    },
+  });
   if (!normalized) return null;
-  return preserveCase ? normalized : normalized.toLowerCase();
+  return normalized;
 }
 
 function readSkillSourceKind(skill: CompanySkill) {
@@ -2929,7 +2938,7 @@ function buildManifestFromPackageFiles(
 
 function normalizeGitHubSourcePath(value: string | null | undefined) {
   if (!value) return "";
-  return value.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  return trimSlashes(value.trim().replace(/\\/g, "/"));
 }
 
 export function parseGitHubSourceUrl(rawUrl: string) {
@@ -3172,7 +3181,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const tree = await fetchJson<{ tree?: Array<{ path: string; type: string }> }>(
       `${apiBase}/repos/${parsed.owner}/${parsed.repo}/git/trees/${ref}?recursive=1`,
     ).catch(() => ({ tree: [] }));
-    const basePrefix = parsed.basePath ? `${parsed.basePath.replace(/^\/+|\/+$/g, "")}/` : "";
+    const basePrefix = parsed.basePath ? `${trimSlashes(parsed.basePath)}/` : "";
     const candidatePaths = (tree.tree ?? [])
       .filter((entry) => entry.type === "blob")
       .map((entry) => entry.path)

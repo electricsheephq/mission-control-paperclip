@@ -11,9 +11,10 @@
  */
 import { fileURLToPath } from 'node:url';
 
-const ISSUE_PATTERNS = [
+const DEFAULT_REPO = 'paperclipai/paperclip';
+const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const RELATIVE_ISSUE_PATTERNS = [
   /(?:fixes|closes|resolves|refs)\s+#\d+/i,
-  /(?:^|[\s(])https:\/\/github\.com\/paperclipai\/paperclip\/issues\/\d+(?=$|[\s),:;!?]|[.](?![\w-]))/i,
   /(?<!\w)#\d+/,
 ];
 
@@ -53,6 +54,18 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function normalizeRepo(repo) {
+  return typeof repo === 'string' && REPO_PATTERN.test(repo) ? repo : DEFAULT_REPO;
+}
+
+function issueUrlPattern(repo) {
+  const escapedRepo = escapeRegExp(normalizeRepo(repo));
+  return new RegExp(
+    `(?:^|[\\s(])https://github\\.com/${escapedRepo}/issues/\\d+(?=$|[\\s),:;!?]|[.](?![\\w-]))`,
+    'i',
+  );
+}
+
 function countMatchedFields(body, fieldSet) {
   let matched = 0;
   for (const variants of fieldSet) {
@@ -87,7 +100,7 @@ function parsePrefix(title) {
   return match ? match[1].toLowerCase() : null;
 }
 
-export function checkLinkedIssue(body, prTitle = '') {
+export function checkLinkedIssue(body, prTitle = '', repo = process.env.GH_REPO ?? DEFAULT_REPO) {
   const prefix = parsePrefix(prTitle);
 
   if (prefix && SKIP_ISSUE_PREFIXES.includes(prefix)) {
@@ -98,9 +111,10 @@ export function checkLinkedIssue(body, prTitle = '') {
     return { passed: false, failures: ['PR body is empty — please fill out the PR template'] };
   }
 
-  const linked = ISSUE_PATTERNS.some(p => p.test(body));
+  const linked = [...RELATIVE_ISSUE_PATTERNS, issueUrlPattern(repo)].some(p => p.test(body));
   const inlined = hasInlineIssueDescription(body);
   const passed = linked || inlined;
+  const issueTemplateUrl = `https://github.com/${normalizeRepo(repo)}/tree/master/.github/ISSUE_TEMPLATE`;
 
   return {
     passed,
@@ -108,7 +122,7 @@ export function checkLinkedIssue(body, prTitle = '') {
       'No linked issue or inline issue description found — either tag an existing issue ' +
       'with `Fixes #NNN` / `Closes #NNN` / `Refs #NNN`, or describe the underlying issue ' +
       'inline in the PR body following one of our issue templates ' +
-      '(https://github.com/paperclipai/paperclip/tree/master/.github/ISSUE_TEMPLATE). ' +
+      `(${issueTemplateUrl}). ` +
       'See CONTRIBUTING.md → "Link Issues or Describe Them In-PR".',
     ],
   };
@@ -117,7 +131,7 @@ export function checkLinkedIssue(body, prTitle = '') {
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const body = process.env.PR_BODY ?? '';
   const title = process.env.PR_TITLE ?? '';
-  const result = checkLinkedIssue(body, title);
+  const result = checkLinkedIssue(body, title, process.env.GH_REPO);
   console.log(JSON.stringify(result));
   process.exit(result.passed ? 0 : 1);
 }

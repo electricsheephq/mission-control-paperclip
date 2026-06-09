@@ -13,6 +13,7 @@ import type {
   SecretVersionSelector,
   SshEnvironmentConfig,
 } from "@paperclipai/shared";
+import { collapseToDashKey } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
@@ -153,11 +154,7 @@ function secretName(input: {
   driver: EnvironmentDriver;
   field: string;
 }) {
-  const slug = input.environmentName
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 48) || "environment";
+  const slug = collapseToDashKey(input.environmentName).slice(0, 48) || "environment";
   return `environment-${input.driver}-${slug}-${input.field}-${randomUUID().slice(0, 8)}`;
 }
 
@@ -216,7 +213,7 @@ async function persistConfigSecretRefs(input: {
       companyId: input.companyId,
       environmentName: input.environmentName,
       driver: input.driver,
-      field: path.replace(/[^a-z0-9]+/gi, "-").toLowerCase(),
+      field: collapseToDashKey(path),
       provider: input.secretProvider,
       value: trimmed,
       actor: input.actor,

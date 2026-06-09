@@ -35,6 +35,17 @@ test('passes with full github.com URL', () => {
   );
 });
 
+test('passes with full github.com URL for the configured repository', () => {
+  assert.equal(
+    checkLinkedIssue(
+      'See https://github.com/electricsheephq/mission-control-paperclip/issues/202',
+      'fix: bug',
+      'electricsheephq/mission-control-paperclip'
+    ).passed,
+    true
+  );
+});
+
 test('passes with a full github.com URL followed by punctuation', () => {
   assert.equal(
     checkLinkedIssue('See (https://github.com/paperclipai/paperclip/issues/202).', 'fix: bug').passed,
@@ -57,6 +68,16 @@ test('fails with no issue reference when no skip prefix', () => {
 test('fails with cross-repo issue reference', () => {
   const result = checkLinkedIssue('See https://github.com/other/repo/issues/123', 'fix: bug');
   assert.equal(result.passed, false);
+});
+
+test('fails with upstream issue URL when configured for the Electric Sheep fork', () => {
+  const result = checkLinkedIssue(
+    'See https://github.com/paperclipai/paperclip/issues/123',
+    'fix: bug',
+    'electricsheephq/mission-control-paperclip'
+  );
+  assert.equal(result.passed, false);
+  assert.match(result.failures[0], /electricsheephq\/mission-control-paperclip/);
 });
 
 test('fails when the Paperclip issue URL is embedded inside another host', () => {

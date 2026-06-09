@@ -11,7 +11,7 @@ import type {
 } from "@paperclipai/shared";
 import { HttpError, conflict, notFound, unprocessable } from "../errors.js";
 import { ghFetch, resolveRawGitHubUrl } from "./github-fetch.js";
-import { normalizePortablePath } from "./portable-path.js";
+import { normalizePortablePath, toSafePortablePath } from "./portable-path.js";
 import { resolvePathWithinRoot } from "./path-containment.js";
 
 interface CatalogManifestFile {
@@ -98,12 +98,20 @@ function resolveCatalogPackageRoot() {
 }
 
 function sourceRootPath(source: CatalogSkillSource) {
-  return source.path ? normalizePortablePath(source.path) : "";
+  return source.path ? requireSafeCatalogPath(source.path, "Catalog source path") : "";
 }
 
 function resolveCatalogSourcePath(source: CatalogSkillSource, relativePath: string) {
   const sourceRoot = sourceRootPath(source);
   return sourceRoot ? `${sourceRoot}/${relativePath}` : relativePath;
+}
+
+function requireSafeCatalogPath(input: string, label = "Catalog file path") {
+  const normalized = toSafePortablePath(input);
+  if (!normalized) {
+    throw unprocessable(`${label} is invalid: ${input}`);
+  }
+  return normalized;
 }
 
 async function fetchCatalogSourceFile(
@@ -204,7 +212,7 @@ export async function readCatalogSkillFile(
   relativePath = "SKILL.md",
 ): Promise<CatalogSkillFileDetail> {
   const skill = getCatalogSkillOrThrow(reference);
-  const normalizedPath = normalizePortablePath(relativePath || "SKILL.md");
+  const normalizedPath = requireSafeCatalogPath(relativePath || "SKILL.md");
   const fileEntry = skill.files.find((entry) => entry.path === normalizedPath);
   if (!fileEntry) {
     throw notFound("Catalog skill file not found");
@@ -227,7 +235,7 @@ export async function readCatalogSkillFile(
 
 export async function copyCatalogSkillFile(reference: string, relativePath: string, targetRoot: string): Promise<void> {
   const skill = getCatalogSkillOrThrow(reference);
-  const normalizedPath = normalizePortablePath(relativePath || "SKILL.md");
+  const normalizedPath = requireSafeCatalogPath(relativePath || "SKILL.md");
   const fileEntry = skill.files.find((entry) => entry.path === normalizedPath);
   if (!fileEntry) {
     throw notFound("Catalog skill file not found");
@@ -238,6 +246,7 @@ export async function copyCatalogSkillFile(reference: string, relativePath: stri
     throw unprocessable(`Catalog file path is invalid: ${relativePath}`);
   }
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
+  // codeql[js/path-injection]: normalizedPath is rejected unless it is a relative, non-traversing catalog path, then resolved beneath targetRoot.
   await fs.writeFile(targetPath, await readCatalogFileBytes(skill, normalizedPath));
 }
 

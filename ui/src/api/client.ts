@@ -1,5 +1,12 @@
 const BASE = "/api";
 
+function apiPath(path: string) {
+  if (!path.startsWith("/") || path.startsWith("//") || path.includes("://")) {
+    throw new ApiError("Invalid API path", 400, null);
+  }
+  return `${BASE}${path}`;
+}
+
 export class ApiError extends Error {
   status: number;
   body: unknown;
@@ -19,7 +26,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     headers.set("Content-Type", "application/json");
   }
 
-  const res = await fetch(`${BASE}${path}`, {
+  // codeql[js/request-forgery]: API client requests are constrained to same-origin /api paths by apiPath().
+  const res = await fetch(apiPath(path), {
     headers,
     credentials: "include",
     ...init,

@@ -2,6 +2,7 @@ import {
   createHash,
   generateKeyPairSync,
   randomBytes,
+  randomInt,
   timingSafeEqual
 } from "node:crypto";
 import { lookup as dnsLookup } from "node:dns/promises";
@@ -102,10 +103,9 @@ type MemberGrantPayload = {
 };
 
 function createInviteToken() {
-  const bytes = randomBytes(INVITE_TOKEN_SUFFIX_LENGTH);
   let suffix = "";
   for (let idx = 0; idx < INVITE_TOKEN_SUFFIX_LENGTH; idx += 1) {
-    suffix += INVITE_TOKEN_ALPHABET[bytes[idx]! % INVITE_TOKEN_ALPHABET.length];
+    suffix += INVITE_TOKEN_ALPHABET[randomInt(INVITE_TOKEN_ALPHABET.length)];
   }
   return `${INVITE_TOKEN_PREFIX}${suffix}`;
 }
@@ -464,9 +464,11 @@ function headerMapGetIgnoreCase(
 function tokenFromAuthorizationHeader(rawHeader: string | null): string | null {
   const trimmed = nonEmptyTrimmedString(rawHeader);
   if (!trimmed) return null;
-  const bearerMatch = trimmed.match(/^bearer\s+(.+)$/i);
-  if (bearerMatch?.[1]) {
-    return nonEmptyTrimmedString(bearerMatch[1]);
+  if (trimmed.length > "bearer".length && trimmed.slice(0, "bearer".length).toLowerCase() === "bearer") {
+    const separator = trimmed["bearer".length];
+    if (separator === " " || separator === "\t") {
+      return nonEmptyTrimmedString(trimmed.slice("bearer".length + 1));
+    }
   }
   return trimmed;
 }
@@ -1670,12 +1672,30 @@ export function buildInviteOnboardingTextDocument(
     : [];
 
   const lines: string[] = [];
+  const leadingWhitespaceLength = (line: string) => {
+    let length = 0;
+    while (length < line.length && (line[length] === " " || line[length] === "\t")) {
+      length += 1;
+    }
+    return length;
+  };
+  const trimTemplateBlock = (block: string) => {
+    let trimmed = block.startsWith("\n") ? block.slice(1) : block;
+    while (trimmed.length > 0) {
+      const lastNewlineIndex = trimmed.lastIndexOf("\n");
+      if (lastNewlineIndex < 0) break;
+      const lastLine = trimmed.slice(lastNewlineIndex + 1);
+      if (lastLine.trim().length > 0) break;
+      trimmed = trimmed.slice(0, lastNewlineIndex);
+    }
+    return trimmed;
+  };
   const appendBlock = (block: string) => {
-    const trimmed = block.replace(/^\n/, "").replace(/\n\s*$/, "");
+    const trimmed = trimTemplateBlock(block);
     const lineIndentation = trimmed
       .split("\n")
       .filter((line) => line.trim().length > 0)
-      .map((line) => line.match(/^(\s*)/)?.[0].length ?? 0);
+      .map(leadingWhitespaceLength);
     const minIndent =
       lineIndentation.length > 0 ? Math.min(...lineIndentation) : 0;
     for (const line of trimmed.split("\n")) {

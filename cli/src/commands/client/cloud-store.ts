@@ -131,9 +131,7 @@ function normalizeConnection(value: unknown): CloudConnection | null {
   const stackId = stringValue(record.stackId);
   const targetCompanyId = stringValue(record.targetCompanyId);
   const accessToken = stringValue(record.accessToken);
-  const token = typeof record.token === "object" && record.token !== null && !Array.isArray(record.token)
-    ? record.token as CloudConnectionTokenRecord
-    : null;
+  const token = normalizeTokenRecord(record.token);
   const privateKeyPem = stringValue(record.privateKeyPem);
   const sourcePublicKey = stringValue(record.sourcePublicKey);
   const sourceInstanceId = stringValue(record.sourceInstanceId);
@@ -165,6 +163,39 @@ function normalizeConnection(value: unknown): CloudConnection | null {
     scopes: stringArray(record.scopes),
     createdAt,
     updatedAt,
+  };
+}
+
+function normalizeTokenRecord(value: unknown): CloudConnectionTokenRecord | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const id = stringValue(record.id);
+  const companyStackId = stringValue(record.companyStackId);
+  const targetOrigin = stringValue(record.targetOrigin);
+  const sourceInstanceId = stringValue(record.sourceInstanceId);
+  const sourceInstanceFingerprint = stringValue(record.sourceInstanceFingerprint);
+  const scopes = stringArray(record.scopes);
+  const expiresAt = stringValue(record.expiresAt);
+  if (
+    !id ||
+    !companyStackId ||
+    !targetOrigin ||
+    !sourceInstanceId ||
+    !sourceInstanceFingerprint ||
+    scopes.length === 0 ||
+    !expiresAt
+  ) {
+    return null;
+  }
+  return {
+    ...record,
+    id,
+    companyStackId,
+    targetOrigin,
+    sourceInstanceId,
+    sourceInstanceFingerprint,
+    scopes,
+    expiresAt,
   };
 }
 

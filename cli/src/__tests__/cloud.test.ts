@@ -8,6 +8,7 @@ import {
   buildBundleFromLocalCompany,
   cloudCommandExitCodes,
   connectCloud,
+  isValidAuthorizationCode,
   resolveDeviceCodeExpiresAt,
 } from "../commands/client/cloud.js";
 import {
@@ -76,6 +77,45 @@ describe("cloud CLI helpers", () => {
 
     expect(connection.accessToken).toBe("upt_test");
     expect(getCloudConnection("https://cloud.example.test")?.token.id).toBe("token-1");
+  });
+
+  it("ignores stored cloud connections with malformed token records", () => {
+    const storePath = path.join(tempHome, "secrets", "cloud-upstream-connections.json");
+    fs.mkdirSync(path.dirname(storePath), { recursive: true });
+    fs.writeFileSync(storePath, JSON.stringify({
+      version: 1,
+      currentConnectionId: "cloud-bad",
+      connections: {
+        "cloud-bad": {
+          id: "cloud-bad",
+          remoteUrl: "https://cloud.example.test",
+          targetOrigin: "https://cloud.example.test",
+          targetHost: "cloud.example.test",
+          stackId: "stack-1",
+          targetCompanyId: "target-company-1",
+          accessToken: "upt_test",
+          token: {
+            id: "token-1",
+          },
+          privateKeyPem: "private",
+          sourcePublicKey: "public",
+          sourceInstanceId: "paperclip-local-default",
+          sourceInstanceFingerprint: "sha256:test",
+          scopes: ["upstream_import:preview"],
+          createdAt: "2026-05-18T00:00:00.000Z",
+          updatedAt: "2026-05-18T00:00:00.000Z",
+        },
+      },
+    }));
+
+    expect(getCloudConnection("https://cloud.example.test")).toBeNull();
+  });
+
+  it("rejects whitespace-only PKCE authorization codes", () => {
+    expect(isValidAuthorizationCode("code-1")).toBe(true);
+    expect(isValidAuthorizationCode(" code-1 ")).toBe(true);
+    expect(isValidAuthorizationCode("   ")).toBe(false);
+    expect(isValidAuthorizationCode(null)).toBe(false);
   });
 
   it("hard-blocks incompatible transfer schema versions with the stable schema exit code", () => {

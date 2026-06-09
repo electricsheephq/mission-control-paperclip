@@ -19,6 +19,7 @@ import {
   getAdapterPluginsDir,
   getAdapterPluginByType,
 } from "../services/adapter-plugin-store.js";
+import { resolvePathWithinRoot } from "../services/path-containment.js";
 import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
 
 // ---------------------------------------------------------------------------
@@ -64,8 +65,14 @@ function resolvePackageDir(record: Pick<AdapterPluginRecord, "localPath" | "pack
     : path.resolve(getAdapterPluginsDir(), "node_modules", record.packageName);
 }
 
+function resolvePackageFile(packageDir: string, relativePath: string): string | null {
+  return resolvePathWithinRoot(packageDir, relativePath);
+}
+
 function resolvePackageEntryPoint(packageDir: string): string {
-  const pkgJsonPath = path.join(packageDir, "package.json");
+  const pkgJsonPath = resolvePackageFile(packageDir, "package.json");
+  if (!pkgJsonPath) throw new Error("Adapter package metadata path escaped package directory.");
+  // codeql[js/path-injection]: packageDir is the adapter package root and package.json is resolved within that root.
   const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
 
   if (pkg.exports && typeof pkg.exports === "object" && pkg.exports["."]) {
@@ -85,7 +92,9 @@ function extractUiParserSource(
   packageDir: string,
   packageName: string,
 ): string | undefined {
-  const pkgJsonPath = path.join(packageDir, "package.json");
+  const pkgJsonPath = resolvePackageFile(packageDir, "package.json");
+  if (!pkgJsonPath) return undefined;
+  // codeql[js/path-injection]: packageDir is the adapter package root and package.json is resolved within that root.
   const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
 
   if (!pkg.exports || typeof pkg.exports !== "object" || !pkg.exports["./ui-parser"]) {
@@ -113,9 +122,11 @@ function extractUiParserSource(
   const uiParserFile = typeof uiParserExp === "string"
     ? uiParserExp
     : (uiParserExp.import ?? uiParserExp.default);
-  const uiParserPath = path.resolve(packageDir, uiParserFile);
+  const uiParserPath = typeof uiParserFile === "string"
+    ? resolvePackageFile(packageDir, uiParserFile)
+    : null;
 
-  if (!uiParserPath.startsWith(packageDir + path.sep) && uiParserPath !== packageDir) {
+  if (!uiParserPath) {
     logger.warn(
       { packageName, uiParserFile },
       "UI parser path escapes package directory — skipping",
@@ -128,6 +139,7 @@ function extractUiParserSource(
   }
 
   try {
+    // codeql[js/path-injection]: uiParserFile is resolved beneath packageDir before the source is read.
     const source = fs.readFileSync(uiParserPath, "utf-8");
     logger.info(
       { packageName, uiParserFile, size: source.length },

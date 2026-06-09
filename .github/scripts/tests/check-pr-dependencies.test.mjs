@@ -63,3 +63,36 @@ test('checkDependencies: compares package files against the resolved base ref in
     '/repos/paperclipai/paperclip/contents/packages/foo/package.json?ref=refs%2Fpull%2F6469%2Fhead',
   ]);
 });
+
+test('checkDependencies: can log skipped package diffs when debug logging is enabled', async (t) => {
+  const originalDebug = process.env.DEBUG_PR_DEPENDENCIES;
+  const originalWarn = console.warn;
+  const warnings = [];
+  process.env.DEBUG_PR_DEPENDENCIES = '1';
+  console.warn = (message) => {
+    warnings.push(String(message));
+  };
+  t.after(() => {
+    if (originalDebug === undefined) {
+      delete process.env.DEBUG_PR_DEPENDENCIES;
+    } else {
+      process.env.DEBUG_PR_DEPENDENCIES = originalDebug;
+    }
+    console.warn = originalWarn;
+  });
+
+  const result = await checkDependencies(
+    [{ filename: 'packages/foo/package.json', status: 'added' }],
+    'token',
+    'paperclipai/paperclip',
+    6469,
+    'main',
+    async () => {
+      throw new Error('base file missing');
+    }
+  );
+
+  assert.equal(result.passed, true);
+  assert.deepEqual(result.informational, []);
+  assert.match(warnings[0], /Skipping dependency diff for packages\/foo\/package\.json: base file missing/);
+});

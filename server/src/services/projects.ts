@@ -16,6 +16,9 @@ import {
   hasNonAsciiContent,
   isUuidLike,
   normalizeProjectUrlKey,
+  splitPathSegments,
+  stripTrailingPathSeparators,
+  stripTrailingSlashes,
   type BudgetWindowKind,
   type ProjectBudgetSummary,
   type ProjectCodebase,
@@ -183,7 +186,7 @@ function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   if (!raw) return null;
   try {
     const parsed = new URL(raw);
-    const cleanedPath = parsed.pathname.replace(/\/+$/, "");
+    const cleanedPath = stripTrailingSlashes(parsed.pathname);
     const repoName = cleanedPath.split("/").filter(Boolean).pop()?.replace(/\.git$/i, "") ?? "";
     return repoName || null;
   } catch {
@@ -435,15 +438,15 @@ function normalizeWorkspaceCwd(value: unknown): string | null {
 }
 
 function deriveNameFromCwd(cwd: string): string {
-  const normalized = cwd.replace(/[\\/]+$/, "");
-  const segments = normalized.split(/[\\/]/).filter(Boolean);
+  const normalized = stripTrailingPathSeparators(cwd);
+  const segments = splitPathSegments(normalized);
   return segments[segments.length - 1] ?? "Local folder";
 }
 
 function deriveNameFromRepoUrl(repoUrl: string): string {
   try {
     const url = new URL(repoUrl);
-    const cleanedPath = url.pathname.replace(/\/+$/, "");
+    const cleanedPath = stripTrailingSlashes(url.pathname);
     const lastSegment = cleanedPath.split("/").filter(Boolean).pop() ?? "";
     const noGitSuffix = lastSegment.replace(/\.git$/i, "");
     return noGitSuffix || repoUrl;

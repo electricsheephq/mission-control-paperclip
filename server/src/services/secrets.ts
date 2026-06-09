@@ -29,6 +29,7 @@ import type {
   SecretVersionSelector,
 } from "@paperclipai/shared";
 import {
+  collapseToDashKey,
   createSecretProviderConfigSchema,
   deriveProjectUrlKey,
   envBindingSchema,
@@ -219,12 +220,14 @@ function isSensitiveEnvKey(key: string) {
 }
 
 function normalizeSecretKey(input: string) {
-  return input
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_.-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 120);
+  return collapseToDashKey(input.trim(), {
+    allowed: (char) =>
+      (char >= "a" && char <= "z") ||
+      (char >= "0" && char <= "9") ||
+      char === "_" ||
+      char === "." ||
+      char === "-",
+  }).slice(0, 120);
 }
 
 function deriveSecretNameFromExternalRef(externalRef: string) {

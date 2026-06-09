@@ -3445,7 +3445,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     try {
       if (onImageUpload && file.type.startsWith("image/")) {
         const url = await onImageUpload(file);
-        const safeName = file.name.replace(/[[\]]/g, "\\$&");
+        const safeName = file.name.replace(/[\\[\]]/g, "\\$&");
         const markdown = `![${safeName}](${url})`;
         setBody((prev) => prev ? `${prev}\n\n${markdown}` : markdown);
         setComposerAttachments((prev) => prev.map((item) =>

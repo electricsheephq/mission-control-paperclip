@@ -1,15 +1,11 @@
-const PROJECT_URL_KEY_DELIM_RE = /[^a-z0-9]+/g;
-const PROJECT_URL_KEY_TRIM_RE = /^-+|-+$/g;
+import { collapseToDashKey } from "./url-key-normalize.js";
+
 const NON_ASCII_RE = /[^\x00-\x7F]/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function normalizeProjectUrlKey(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
-  const normalized = value
-    .trim()
-    .toLowerCase()
-    .replace(PROJECT_URL_KEY_DELIM_RE, "-")
-    .replace(PROJECT_URL_KEY_TRIM_RE, "");
+  const normalized = collapseToDashKey(value.trim());
   return normalized.length > 0 ? normalized : null;
 }
 

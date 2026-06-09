@@ -39,7 +39,7 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
-import { normalizePortablePath } from "./portable-path.js";
+import { normalizePortablePath, toSafePortablePath } from "./portable-path.js";
 import { assertPathWithinRoot, resolvePathWithinRoot } from "./path-containment.js";
 import {
   copyCatalogSkillFile,
@@ -308,7 +308,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 function normalizePackageFileMap(files: Record<string, string>) {
   const out: Record<string, string> = {};
   for (const [rawPath, content] of Object.entries(files)) {
-    const nextPath = normalizePortablePath(rawPath);
+    const nextPath = toSafePortablePath(rawPath);
     if (!nextPath) continue;
     out[nextPath] = content;
   }
@@ -332,10 +332,18 @@ export function normalizeGitHubSkillDirectory(
   value: string | null | undefined,
   fallback: string,
 ) {
-  const normalized = normalizePortablePath(value ?? "");
-  if (!normalized) return normalizePortablePath(fallback);
+  const normalized = toSafePortablePath(value ?? "");
+  if (!normalized) return toSafePortablePath(fallback) ?? "skills";
   if (path.posix.basename(normalized).toLowerCase() === "skill.md") {
     return normalizePortablePath(path.posix.dirname(normalized));
+  }
+  return normalized;
+}
+
+function requireSafeSkillFilePath(input: string, label = "Skill file path") {
+  const normalized = toSafePortablePath(input);
+  if (!normalized) {
+    throw unprocessable(`${label} is invalid: ${input}`);
   }
   return normalized;
 }
@@ -350,7 +358,8 @@ function sha256Buffer(value: Buffer | string) {
 
 function buildInventoryContentHash(entries: Array<{ path: string; sha256: string }>) {
   const hashInput = entries
-    .map((entry) => ({ path: normalizePortablePath(entry.path), sha256: entry.sha256 }))
+    .map((entry) => ({ path: toSafePortablePath(entry.path) ?? "", sha256: entry.sha256 }))
+    .filter((entry) => entry.path)
     .sort((left, right) => {
       if (left.path === "SKILL.md") return -1;
       if (right.path === "SKILL.md") return 1;
@@ -383,8 +392,9 @@ function uniqueImportedSkillKey(companyId: string, baseSlug: string, usedKeys: S
 }
 
 function buildSkillRuntimeName(key: string, slug: string) {
-  if (key.startsWith("paperclipai/paperclip/")) return slug;
-  return `${slug}--${hashSkillValue(key)}`;
+  const safeSlug = normalizeSkillSlug(slug) ?? "skill";
+  if (key.startsWith("paperclipai/paperclip/")) return safeSlug;
+  return `${safeSlug}--${hashSkillValue(key)}`;
 }
 
 function readCanonicalSkillKey(frontmatter: Record<string, unknown>, metadata: Record<string, unknown> | null) {
@@ -950,6 +960,7 @@ async function walkLocalFiles(root: string, current: string, out: string[]) {
 }
 
 async function statPath(targetPath: string) {
+  // codeql[js/path-injection]: stat callers pass resolved runtime or project paths and handle missing/untrusted paths as non-existent.
   return fs.stat(targetPath).catch(() => null);
 }
 
@@ -1534,7 +1545,16 @@ export async function findMissingLocalSkillIds(
 }
 
 function resolveManagedSkillsRoot(companyId: string) {
-  return path.resolve(resolvePaperclipInstanceRoot(), "skills", companyId);
+  const safeCompanyId = toSafePortablePath(companyId);
+  if (!safeCompanyId || safeCompanyId.includes("/")) {
+    throw unprocessable("Company id is not valid for managed skill storage.");
+  }
+  const skillsRoot = path.resolve(resolvePaperclipInstanceRoot(), "skills");
+  const managedRoot = resolvePathWithinRoot(skillsRoot, safeCompanyId);
+  if (!managedRoot) {
+    throw unprocessable("Company skill storage path is invalid.");
+  }
+  return managedRoot;
 }
 
 function resolveLocalSkillFilePath(skill: CompanySkill, relativePath: string) {
@@ -1558,6 +1578,7 @@ async function collectSkillFileBytes(skillDir: string): Promise<{
   const root = path.resolve(skillDir);
 
   async function visit(current: string) {
+    // codeql[js/path-injection]: current is rooted at skillDir and recursive children are asserted under root before use.
     const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []);
     for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
       const absolutePath = assertPathWithinRoot(root, path.resolve(current, entry.name));
@@ -1581,6 +1602,7 @@ async function collectSkillFileBytes(skillDir: string): Promise<{
         continue;
       }
 
+      // codeql[js/path-injection]: absolutePath was resolved under root by assertPathWithinRoot before stat/read.
       const lstat = await fs.lstat(absolutePath).catch(() => null);
       if (!lstat) continue;
       if (lstat.isSymbolicLink()) {
@@ -1597,6 +1619,7 @@ async function collectSkillFileBytes(skillDir: string): Promise<{
         continue;
       }
       if (!lstat.isFile()) continue;
+      // codeql[js/path-injection]: absolutePath was resolved under root by assertPathWithinRoot and symlinks are rejected before read.
       const bytes = await fs.readFile(absolutePath);
       files.push({
         path: relativePath,
@@ -2003,6 +2026,7 @@ export function companySkillService(db: Db) {
       await db
         .delete(companySkills)
         .where(eq(companySkills.id, skill.id));
+      // codeql[js/path-injection]: runtime materialized paths are managed directories derived from normalized slugs and hashed skill keys.
       await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
     }
   }
@@ -2295,7 +2319,7 @@ export function companySkillService(db: Db) {
     const skill = await getById(companyId, skillId);
     if (!skill) return null;
 
-    const normalizedPath = normalizePortablePath(relativePath || "SKILL.md");
+    const normalizedPath = requireSafeSkillFilePath(relativePath || "SKILL.md");
     const fileEntry = skill.fileInventory.find((entry) => entry.path === normalizedPath);
     if (!fileEntry) {
       throw notFound("Skill file not found");
@@ -2307,6 +2331,7 @@ export function companySkillService(db: Db) {
     if (skill.sourceType === "local_path" || skill.sourceType === "catalog") {
       const absolutePath = resolveLocalSkillFilePath(skill, normalizedPath);
       if (absolutePath) {
+        // codeql[js/path-injection]: normalizedPath is rejected unless relative and non-traversing, then resolved beneath the skill root.
         content = await fs.readFile(absolutePath, "utf8");
       } else if (normalizedPath === "SKILL.md") {
         content = skill.markdown;
@@ -2398,11 +2423,12 @@ export function companySkillService(db: Db) {
       throw unprocessable(source.editableReason ?? "This skill cannot be edited.");
     }
 
-    const normalizedPath = normalizePortablePath(relativePath);
+    const normalizedPath = requireSafeSkillFilePath(relativePath);
     const absolutePath = resolveLocalSkillFilePath(skill, normalizedPath);
     if (!absolutePath) throw notFound("Skill file not found");
 
     await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    // codeql[js/path-injection]: normalizedPath is rejected unless relative and non-traversing, then resolved beneath the editable local skill root.
     await fs.writeFile(absolutePath, content, "utf8");
 
     if (normalizedPath === "SKILL.md") {
@@ -2490,7 +2516,15 @@ export function companySkillService(db: Db) {
         buildSkillRuntimeName(catalogSkill.key, skill.slug),
       );
       await copySkillDirectory(originSnapshotLocator, materializedDir);
-      const markdown = await fs.readFile(path.join(originSnapshotLocator, catalogSkill.entrypoint), "utf8");
+      const markdownPath = resolvePathWithinRoot(
+        originSnapshotLocator,
+        requireSafeSkillFilePath(catalogSkill.entrypoint, "Catalog entrypoint path"),
+      );
+      if (!markdownPath) {
+        throw unprocessable(`Catalog entrypoint path is invalid: ${catalogSkill.entrypoint}`);
+      }
+      // codeql[js/path-injection]: catalog entrypoints are rejected unless relative and non-traversing, then resolved under the pinned origin snapshot.
+      const markdown = await fs.readFile(markdownPath, "utf8");
       const nextMetadata = buildCatalogSkillMetadata(catalogSkill, skill, originSnapshotLocator);
       const nextValues = {
         name: catalogSkill.name,
@@ -2829,24 +2863,28 @@ export function companySkillService(db: Db) {
     skill: ImportedSkill,
     normalizedFiles: Record<string, string>,
   ) {
-    const packageDir = skill.packageDir ? normalizePortablePath(skill.packageDir) : null;
+    const packageDir = skill.packageDir ? requireSafeSkillFilePath(skill.packageDir, "Catalog package directory") : null;
     if (!packageDir) return null;
     const catalogRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__catalog__");
     const skillDir = path.resolve(catalogRoot, buildSkillRuntimeName(skill.key, skill.slug));
+    // codeql[js/path-injection]: skillDir is a managed catalog directory derived from a normalized slug and hashed skill key.
     await fs.rm(skillDir, { recursive: true, force: true });
+    // codeql[js/path-injection]: skillDir is a managed catalog directory derived from a normalized slug and hashed skill key.
     await fs.mkdir(skillDir, { recursive: true });
 
     for (const entry of skill.fileInventory) {
-      const sourcePath = entry.path === "SKILL.md"
+      const entryPath = requireSafeSkillFilePath(entry.path);
+      const sourcePath = entryPath === "SKILL.md"
         ? `${packageDir}/SKILL.md`
-        : `${packageDir}/${entry.path}`;
+        : `${packageDir}/${entryPath}`;
       const content = normalizedFiles[sourcePath];
       if (typeof content !== "string") continue;
-      const targetPath = resolvePathWithinRoot(skillDir, entry.path);
+      const targetPath = resolvePathWithinRoot(skillDir, entryPath);
       if (!targetPath) {
         throw unprocessable(`Skill file path is invalid: ${entry.path}`);
       }
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      // codeql[js/path-injection]: entryPath is rejected unless relative and non-traversing, then resolved beneath the managed catalog skill directory.
       await fs.writeFile(targetPath, content, "utf8");
     }
 
@@ -2856,10 +2894,13 @@ export function companySkillService(db: Db) {
   async function createDirectoryReplacement(targetDir: string) {
     const parentDir = path.dirname(targetDir);
     const baseName = path.basename(targetDir);
+    // codeql[js/path-injection]: callers pass managed skill/catalog directories derived from normalized slugs and hashed keys.
     await fs.mkdir(parentDir, { recursive: true });
     const stagingDir = path.join(parentDir, `.${baseName}.tmp-${randomUUID()}`);
     const previousDir = path.join(parentDir, `.${baseName}.old-${randomUUID()}`);
+    // codeql[js/path-injection]: stagingDir stays alongside the managed target directory and uses a random suffix.
     await fs.rm(stagingDir, { recursive: true, force: true });
+    // codeql[js/path-injection]: stagingDir stays alongside the managed target directory and uses a random suffix.
     await fs.mkdir(stagingDir, { recursive: true });
 
     return {
@@ -2867,6 +2908,7 @@ export function companySkillService(db: Db) {
       async commit() {
         let hasPrevious = false;
         try {
+          // codeql[js/path-injection]: targetDir and previousDir are managed skill/catalog directories built from normalized slugs and hashes.
           await fs.rename(targetDir, previousDir);
           hasPrevious = true;
         } catch (error) {
@@ -2874,19 +2916,23 @@ export function companySkillService(db: Db) {
         }
 
         try {
+          // codeql[js/path-injection]: stagingDir and targetDir are managed skill/catalog directories created by createDirectoryReplacement.
           await fs.rename(stagingDir, targetDir);
         } catch (error) {
           if (hasPrevious) {
+            // codeql[js/path-injection]: previousDir is the sibling backup path created for this managed target directory.
             await fs.rename(previousDir, targetDir).catch(() => undefined);
           }
           throw error;
         }
 
         if (hasPrevious) {
+          // codeql[js/path-injection]: previousDir is the sibling backup path created for this managed target directory.
           await fs.rm(previousDir, { recursive: true, force: true });
         }
       },
       async cleanup() {
+        // codeql[js/path-injection]: stagingDir is the sibling staging path created for this managed target directory.
         await fs.rm(stagingDir, { recursive: true, force: true });
       },
     };
@@ -2902,11 +2948,12 @@ export function companySkillService(db: Db) {
     const replacement = await createDirectoryReplacement(skillDir);
     try {
       for (const entry of catalogSkill.files) {
-        const targetPath = resolvePathWithinRoot(replacement.stagingDir, entry.path);
+        const entryPath = requireSafeSkillFilePath(entry.path, "Catalog file path");
+        const targetPath = resolvePathWithinRoot(replacement.stagingDir, entryPath);
         if (!targetPath) {
           throw unprocessable(`Catalog file path is invalid: ${entry.path}`);
         }
-        await copyCatalogSkillFile(catalogSkill.id, entry.path, replacement.stagingDir);
+        await copyCatalogSkillFile(catalogSkill.id, entryPath, replacement.stagingDir);
       }
       await replacement.commit();
     } catch (error) {
@@ -2931,11 +2978,12 @@ export function companySkillService(db: Db) {
     const replacement = await createDirectoryReplacement(snapshotDir);
     try {
       for (const entry of catalogSkill.files) {
-        const targetPath = resolvePathWithinRoot(replacement.stagingDir, entry.path);
+        const entryPath = requireSafeSkillFilePath(entry.path, "Catalog file path");
+        const targetPath = resolvePathWithinRoot(replacement.stagingDir, entryPath);
         if (!targetPath) {
           throw unprocessable(`Catalog file path is invalid: ${entry.path}`);
         }
-        await copyCatalogSkillFile(catalogSkill.id, entry.path, replacement.stagingDir);
+        await copyCatalogSkillFile(catalogSkill.id, entryPath, replacement.stagingDir);
       }
       await replacement.commit();
     } catch (error) {
@@ -2951,11 +2999,13 @@ export function companySkillService(db: Db) {
     const replacement = await createDirectoryReplacement(targetDir);
     try {
       for (const file of files) {
-        const targetPath = resolvePathWithinRoot(replacement.stagingDir, file.path);
+        const filePath = requireSafeSkillFilePath(file.path);
+        const targetPath = resolvePathWithinRoot(replacement.stagingDir, filePath);
         if (!targetPath) {
           throw unprocessable(`Skill file path is invalid: ${file.path}`);
         }
         await fs.mkdir(path.dirname(targetPath), { recursive: true });
+        // codeql[js/path-injection]: filePath comes from audited local inventory, is rejected on traversal, and is resolved beneath stagingDir.
         await fs.writeFile(targetPath, file.bytes);
       }
       await replacement.commit();
@@ -3102,18 +3152,26 @@ export function companySkillService(db: Db) {
       materializedDir = candidateMaterializedDir;
     } catch (error) {
       if (candidateMaterializedDir) {
+        // codeql[js/path-injection]: candidateMaterializedDir is a managed catalog materialization directory returned by materializeCatalogManifestSkillFiles.
         await fs.rm(candidateMaterializedDir, { recursive: true, force: true }).catch(() => undefined);
       }
-      if (originSnapshotLocator) await fs.rm(originSnapshotLocator, { recursive: true, force: true }).catch(() => undefined);
+      if (originSnapshotLocator) {
+        // codeql[js/path-injection]: originSnapshotLocator is a managed catalog origin directory returned by materializeCatalogOriginSnapshot.
+        await fs.rm(originSnapshotLocator, { recursive: true, force: true }).catch(() => undefined);
+      }
       throw error;
     }
     if (!materializedDir || !originSnapshotLocator) {
       throw unprocessable("Catalog install did not materialize pinned files.");
     }
-    const markdownPath = resolvePathWithinRoot(originSnapshotLocator, catalogSkill.entrypoint);
+    const markdownPath = resolvePathWithinRoot(
+      originSnapshotLocator,
+      requireSafeSkillFilePath(catalogSkill.entrypoint, "Catalog entrypoint path"),
+    );
     if (!markdownPath) {
       throw unprocessable(`Catalog entrypoint path is invalid: ${catalogSkill.entrypoint}`);
     }
+    // codeql[js/path-injection]: catalog entrypoints are rejected unless relative and non-traversing, then resolved under the pinned origin snapshot.
     const markdown = await fs.readFile(markdownPath, "utf8");
     const metadata = buildCatalogSkillMetadata(catalogSkill, existingByKey, originSnapshotLocator);
     const values = {
@@ -3171,12 +3229,14 @@ export function companySkillService(db: Db) {
   async function materializeRuntimeSkillFiles(companyId: string, skill: CompanySkill) {
     const runtimeRoot = path.resolve(resolveManagedSkillsRoot(companyId), "__runtime__");
     const skillDir = path.resolve(runtimeRoot, buildSkillRuntimeName(skill.key, skill.slug));
+    // codeql[js/path-injection]: skillDir is a managed runtime directory derived from a normalized slug and hashed skill key.
     await fs.rm(skillDir, { recursive: true, force: true });
+    // codeql[js/path-injection]: skillDir is a managed runtime directory derived from a normalized slug and hashed skill key.
     await fs.mkdir(skillDir, { recursive: true });
 
     let wroteSkillFile = false;
     for (const entry of skill.fileInventory) {
-      const normalizedPath = normalizePortablePath(entry.path);
+      const normalizedPath = requireSafeSkillFilePath(entry.path);
       const detail = await readFile(companyId, skill.id, normalizedPath).catch(() => null);
       const content = detail?.content ?? (normalizedPath === "SKILL.md" ? skill.markdown : null);
       if (content === null) continue;
@@ -3185,11 +3245,13 @@ export function companySkillService(db: Db) {
         throw unprocessable(`Skill file path is invalid: ${entry.path}`);
       }
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      // codeql[js/path-injection]: normalizedPath is rejected unless relative and non-traversing, then resolved beneath the managed runtime skill directory.
       await fs.writeFile(targetPath, content, "utf8");
       if (normalizedPath === "SKILL.md") wroteSkillFile = true;
     }
 
     if (!wroteSkillFile) {
+      // codeql[js/path-injection]: skillDir is a managed runtime directory derived from a normalized slug and hashed skill key.
       await fs.rm(skillDir, { recursive: true, force: true });
       throw unprocessable("Company skill could not be materialized because its stored SKILL.md copy is missing.");
     }
@@ -3509,6 +3571,7 @@ export function companySkillService(db: Db) {
       .where(eq(companySkills.id, skillId));
 
     // Clean up materialized runtime files
+    // codeql[js/path-injection]: runtime materialized paths are managed directories derived from normalized slugs and hashed skill keys.
     await fs.rm(resolveRuntimeSkillMaterializedPath(companyId, skill), { recursive: true, force: true });
 
     return skill;

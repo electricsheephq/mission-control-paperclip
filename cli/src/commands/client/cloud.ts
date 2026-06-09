@@ -571,7 +571,7 @@ async function startPkceCallbackServer(): Promise<{
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     const code = url.searchParams.get("code");
     const state = url.searchParams.get("state");
-    if (!code || state !== expectedState) {
+    if (!isValidAuthorizationCode(code) || state !== expectedState) {
       res.writeHead(400, { "Content-Type": "text/plain" });
       res.end("Paperclip Cloud authorization failed. You can close this tab.");
       rejectCode?.(new Error("Authorization callback was missing a valid code or state."));
@@ -594,6 +594,10 @@ async function startPkceCallbackServer(): Promise<{
     },
     close: () => closeServer(server),
   };
+}
+
+export function isValidAuthorizationCode(code: string | null): code is string {
+  return typeof code === "string" && code.trim().length > 0;
 }
 
 function listenOnLoopback(server: Server): Promise<void> {
