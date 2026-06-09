@@ -29,6 +29,7 @@ import type {
   SecretVersionSelector,
 } from "@paperclipai/shared";
 import {
+  collapseToDashKey,
   createSecretProviderConfigSchema,
   deriveProjectUrlKey,
   envBindingSchema,
@@ -181,12 +182,14 @@ type SecretConsumerContext = {
   issueId?: string | null;
   heartbeatRunId?: string | null;
   pluginId?: string | null;
+  allowedBindingIds?: string[] | null;
 };
 
 export type RuntimeSecretManifestEntry = {
   configPath: string;
   envKey: string | null;
   secretId: string;
+  bindingId?: string | null;
   secretKey: string;
   version: number;
   provider: SecretProvider;
@@ -217,12 +220,14 @@ function isSensitiveEnvKey(key: string) {
 }
 
 function normalizeSecretKey(input: string) {
-  return input
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9_.-]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 120);
+  return collapseToDashKey(input.trim(), {
+    allowed: (char) =>
+      (char >= "a" && char <= "z") ||
+      (char >= "0" && char <= "9") ||
+      char === "_" ||
+      char === "." ||
+      char === "-",
+  }).slice(0, 120);
 }
 
 function deriveSecretNameFromExternalRef(externalRef: string) {
@@ -358,7 +363,7 @@ export function secretService(db: Db) {
     secretId: string,
     context: SecretConsumerContext | undefined,
   ) {
-    if (!context) return;
+    if (!context) return null;
     if (!context.configPath) {
       throw unprocessable("Secret resolution requires a binding config path", { code: "binding_missing" });
     }
@@ -375,6 +380,16 @@ export function secretService(db: Db) {
         { code: "binding_missing" },
       );
     }
+    if (
+      Array.isArray(context.allowedBindingIds) &&
+      !context.allowedBindingIds.includes(binding.id)
+    ) {
+      throw unprocessable(
+        "Secret binding is outside the active low-trust boundary",
+        { code: "binding_not_allowed" },
+      );
+    }
+    return binding;
   }
 
   async function recordAccessEvent(input: {
@@ -565,7 +580,7 @@ export function secretService(db: Db) {
       if (secret.status !== "active") {
         throw unprocessable("Secret is not active", { code: "secret_inactive" });
       }
-      await assertBindingContext(companyId, secret.id, context);
+      const binding = await assertBindingContext(companyId, secret.id, context);
       const versionRow = await getSecretVersion(secret.id, resolvedVersion);
       if (!versionRow) throw new HttpError(404, "Secret version not found", { code: "version_missing" });
       if (versionRow.status === "disabled" || versionRow.status === "destroyed" || versionRow.revokedAt) {
@@ -610,6 +625,7 @@ export function secretService(db: Db) {
           configPath: configPath ?? "",
           envKey: configPath?.startsWith("env.") ? configPath.slice("env.".length) : null,
           secretId: secret.id,
+          bindingId: binding?.id ?? null,
           secretKey: secret.key,
           version: resolvedVersion,
           provider: providerId,

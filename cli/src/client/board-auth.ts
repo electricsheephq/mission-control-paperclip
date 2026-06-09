@@ -171,18 +171,26 @@ async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
 
 export function openUrl(url: string): boolean {
   const platform = process.platform;
+  let safeUrl: string;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    safeUrl = parsed.toString();
+  } catch {
+    return false;
+  }
   try {
     if (platform === "darwin") {
-      const child = spawn("open", [url], { detached: true, stdio: "ignore" });
+      const child = spawn("open", [safeUrl], { detached: true, stdio: "ignore" });
       child.unref();
       return true;
     }
     if (platform === "win32") {
-      const child = spawn("cmd", ["/c", "start", "", url], { detached: true, stdio: "ignore" });
+      const child = spawn("rundll32.exe", ["url.dll,FileProtocolHandler", safeUrl], { detached: true, stdio: "ignore" });
       child.unref();
       return true;
     }
-    const child = spawn("xdg-open", [url], { detached: true, stdio: "ignore" });
+    const child = spawn("xdg-open", [safeUrl], { detached: true, stdio: "ignore" });
     child.unref();
     return true;
   } catch {

@@ -30,7 +30,7 @@ export function validateInstanceConfig(
 ): ConfigValidationResult {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const AjvCtor = (Ajv as any).default ?? Ajv;
-  const ajv = new AjvCtor({ allErrors: true });
+  const ajv = new AjvCtor({ allErrors: false });
   // ajv-formats v3 default export is a FormatsPlugin object; call it as a plugin.
   const applyFormats = (addFormats as any).default ?? addFormats;
   applyFormats(ajv);

@@ -45,6 +45,7 @@ import { loadExternalAdapterPackage, getUiParserSource, getOrExtractUiParserSour
 import { logger } from "../middleware/logger.js";
 import { assertBoardOrgAccess, assertInstanceAdmin } from "./authz.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
+import { resolvePathWithinRoot } from "../services/path-containment.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -86,6 +87,11 @@ interface AdapterInfo {
   isLocalPath?: boolean;
 }
 
+type ParsedPackageSpec = {
+  canonicalName: string;
+  explicitVersion?: string;
+};
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -106,12 +112,85 @@ function resolveAdapterPackageDir(record: AdapterPluginRecord): string {
 function readAdapterPackageVersionFromDisk(record: AdapterPluginRecord): string | undefined {
   try {
     const pkgDir = resolveAdapterPackageDir(record);
-    const raw = fs.readFileSync(path.join(pkgDir, "package.json"), "utf-8");
+    const pkgJsonPath = resolvePathWithinRoot(pkgDir, "package.json");
+    if (!pkgJsonPath) return undefined;
+    // package.json is resolved beneath the installed adapter package directory before reading version metadata.
+    // codeql[js/path-injection]
+    const raw = fs.readFileSync(pkgJsonPath, "utf-8");
     const v = JSON.parse(raw).version;
     return typeof v === "string" && v.trim().length > 0 ? v.trim() : undefined;
   } catch {
     return undefined;
   }
+}
+
+function isNpmNameChar(char: string) {
+  const code = char.charCodeAt(0);
+  return (code >= 97 && code <= 122) ||
+    (code >= 48 && code <= 57) ||
+    char === "." ||
+    char === "_" ||
+    char === "-";
+}
+
+function isSafeNpmPackagePart(value: string) {
+  return value.length > 0 &&
+    value.length <= 214 &&
+    !value.startsWith(".") &&
+    !value.startsWith("_") &&
+    Array.from(value).every(isNpmNameChar);
+}
+
+function isSafeNpmPackageName(value: string) {
+  if (value.length === 0 || value.length > 214) return false;
+  if (value.startsWith("@")) {
+    const slashIndex = value.indexOf("/");
+    if (slashIndex <= 1 || slashIndex === value.length - 1 || value.indexOf("/", slashIndex + 1) !== -1) {
+      return false;
+    }
+    return isSafeNpmPackagePart(value.slice(1, slashIndex)) &&
+      isSafeNpmPackagePart(value.slice(slashIndex + 1));
+  }
+  return !value.includes("/") && isSafeNpmPackagePart(value);
+}
+
+function isSafeNpmVersion(value: string) {
+  if (value.length === 0 || value.length > 128) return false;
+  return Array.from(value).every((char) => {
+    const code = char.charCodeAt(0);
+    return (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122) ||
+      (code >= 48 && code <= 57) ||
+      char === "." ||
+      char === "_" ||
+      char === "-" ||
+      char === "+";
+  });
+}
+
+function parsePackageSpec(rawPackageName: string, rawVersion: string | undefined): ParsedPackageSpec | null {
+  const trimmedPackageName = rawPackageName.trim();
+  const trimmedVersion = typeof rawVersion === "string" && rawVersion.trim().length > 0
+    ? rawVersion.trim()
+    : undefined;
+  let canonicalName = trimmedPackageName;
+  let explicitVersion = trimmedVersion;
+
+  if (!explicitVersion) {
+    const lastAtIndex = trimmedPackageName.lastIndexOf("@");
+    if (lastAtIndex > 0) {
+      const candidateName = trimmedPackageName.slice(0, lastAtIndex);
+      const candidateVersion = trimmedPackageName.slice(lastAtIndex + 1);
+      if (isSafeNpmPackageName(candidateName) && isSafeNpmVersion(candidateVersion)) {
+        canonicalName = candidateName;
+        explicitVersion = candidateVersion;
+      }
+    }
+  }
+
+  if (!isSafeNpmPackageName(canonicalName)) return null;
+  if (explicitVersion && !isSafeNpmVersion(explicitVersion)) return null;
+  return { canonicalName, explicitVersion };
 }
 
 function buildAdapterCapabilities(adapter: ServerAdapterModule): AdapterCapabilities {
@@ -236,26 +315,19 @@ export function adapterRoutes() {
       return;
     }
 
-    // Strip version suffix if the UI sends "pkg@1.2.3" instead of separating it
-    // e.g. "@henkey/hermes-paperclip-adapter@0.3.0" → packageName + version
-    let canonicalName = packageName;
-    let explicitVersion = version;
-    const versionSuffix = packageName.match(/@(\d+\.\d+\.\d+.*)$/);
-    if (versionSuffix) {
-      // For scoped packages: "@scope/name@1.2.3" → "@scope/name" + "1.2.3"
-      // For unscoped: "name@1.2.3" → "name" + "1.2.3"
-      const lastAtIndex = packageName.lastIndexOf("@");
-      if (lastAtIndex > 0 && !explicitVersion) {
-        canonicalName = packageName.slice(0, lastAtIndex);
-        explicitVersion = versionSuffix[1];
-      }
-    }
+    const parsedSpec = isLocalPath ? null : parsePackageSpec(packageName, version);
+    const canonicalName = parsedSpec?.canonicalName ?? packageName;
+    const explicitVersion = parsedSpec?.explicitVersion;
 
     try {
       let installedVersion: string | undefined;
       let moduleLocalPath: string | undefined;
 
       if (!isLocalPath) {
+        if (!parsedSpec) {
+          res.status(400).json({ error: "packageName must be a valid npm package name and version." });
+          return;
+        }
         // npm install into the managed directory
         const pluginsDir = getAdapterPluginsDir();
         const spec = explicitVersion ? `${canonicalName}@${explicitVersion}` : canonicalName;
@@ -269,8 +341,12 @@ export function adapterRoutes() {
 
         // Read installed version from package.json
         try {
-          const pkgJsonPath = path.join(pluginsDir, "node_modules", canonicalName, "package.json");
+          const moduleRoot = path.resolve(pluginsDir, "node_modules");
+          const pkgJsonPath = resolvePathWithinRoot(moduleRoot, path.join(canonicalName, "package.json"));
+          if (!pkgJsonPath) throw new Error("Installed package path escaped adapter plugin root.");
           const pkgContent = await import("node:fs/promises");
+          // canonicalName is validated as an npm package name, then resolved beneath the managed node_modules root.
+          // codeql[js/path-injection]
           const pkgRaw = await pkgContent.readFile(pkgJsonPath, "utf-8");
           const pkg = JSON.parse(pkgRaw);
           const v = pkg.version;
@@ -283,6 +359,8 @@ export function adapterRoutes() {
         // Local path — normalize (e.g., Windows → WSL) and use the resolved path
         moduleLocalPath = path.resolve(await normalizeLocalPath(packageName));
         try {
+          // local adapter paths require instance-admin access and are resolved before reading their package metadata.
+          // codeql[js/path-injection]
           const pkgRaw = await readFile(path.join(moduleLocalPath, "package.json"), "utf-8");
           const v = JSON.parse(pkgRaw).version;
           if (typeof v === "string" && v.trim().length > 0) {
@@ -296,17 +374,16 @@ export function adapterRoutes() {
       // Load and register the adapter (use canonicalName for path resolution)
       const adapterModule = await loadExternalAdapterPackage(canonicalName, moduleLocalPath);
 
-      // Check if this type conflicts with a built-in adapter
-      if (BUILTIN_ADAPTER_TYPES.has(adapterModule.type)) {
-        res.status(409).json({
-          error: `Adapter type "${adapterModule.type}" is a built-in adapter and cannot be overwritten.`,
-        });
-        return;
-      }
+      // External adapters may intentionally override built-in adapter types.
+      // registerServerAdapter preserves the built-in as a fallback so pausing or
+      // removing the override restores the original implementation.
 
-      // Check if already registered (indicates a reinstall/update)
+      // Check if already registered (indicates a reinstall/update).
+      // For built-in types the registry always returns the built-in, so we
+      // additionally require an existing external plugin record to
+      // distinguish a true reinstall from a first-time override.
       const existing = findServerAdapter(adapterModule.type);
-      const isReinstall = existing !== null;
+      const isReinstall = existing !== null && !!getAdapterPluginByType(adapterModule.type);
       if (existing) {
         unregisterServerAdapter(adapterModule.type);
         logger.info({ type: adapterModule.type }, "Unregistered existing adapter for replacement");
@@ -348,6 +425,21 @@ export function adapterRoutes() {
         res.status(500).json({ error: `Failed to install adapter: ${message}` });
       }
     }
+  });
+
+  router.get("/adapters/:type", async (req, res) => {
+    assertBoardOrgAccess(req);
+
+    const adapterType = req.params.type;
+    const adapter = findServerAdapter(adapterType);
+    if (!adapter) {
+      res.status(404).json({ error: `Adapter "${adapterType}" is not registered.` });
+      return;
+    }
+
+    const externalRecord = getAdapterPluginByType(adapterType);
+    const disabledSet = new Set(getDisabledAdapterTypes());
+    res.json(buildAdapterInfo(adapter, externalRecord, disabledSet));
   });
 
   /**
@@ -431,8 +523,9 @@ export function adapterRoutes() {
       return;
     }
 
-    // Prevent removal of built-in adapters
-    if (BUILTIN_ADAPTER_TYPES.has(adapterType)) {
+    // Prevent removal of built-in adapters, unless this built-in type is
+    // currently backed by an external adapter plugin override.
+    if (BUILTIN_ADAPTER_TYPES.has(adapterType) && !getAdapterPluginByType(adapterType)) {
       res.status(403).json({
         error: `Cannot remove built-in adapter "${adapterType}".`,
       });

@@ -16,6 +16,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
 }));
 
@@ -40,7 +41,11 @@ const mockTx = vi.hoisted(() => ({
   insert: mockTxInsert,
 }));
 const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
-const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({ orderBy: mockDbSelectOrderBy })));
+const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
+  orderBy: mockDbSelectOrderBy,
+  then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+    Promise.resolve([]).then(onFulfilled, onRejected),
+})));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDb = vi.hoisted(() => ({
@@ -122,6 +127,7 @@ vi.mock("../services/index.js", () => ({
   }),
   accessService: () => mockAccessService,
   agentService: () => mockAgentService,
+  documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => ({}),
   executionWorkspaceService: () => ({}),
   feedbackService: () => mockFeedbackService,
@@ -229,6 +235,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.listWakeableBlockedDependents.mockReset();
     mockIssueService.getWakeableParentAfterChildCompletion.mockReset();
     mockAccessService.canUser.mockReset();
+    mockAccessService.decide.mockReset();
     mockAccessService.hasPermission.mockReset();
     mockHeartbeatService.wakeup.mockReset();
     mockHeartbeatService.reportRunActivity.mockReset();
@@ -256,7 +263,11 @@ describe.sequential("issue comment reopen routes", () => {
     mockTxInsertValues.mockResolvedValue(undefined);
     mockTxInsert.mockImplementation(() => ({ values: mockTxInsertValues }));
     mockDbSelectOrderBy.mockResolvedValue([]);
-    mockDbSelectWhere.mockImplementation(() => ({ orderBy: mockDbSelectOrderBy }));
+    mockDbSelectWhere.mockImplementation(() => ({
+      orderBy: mockDbSelectOrderBy,
+      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+        Promise.resolve([]).then(onFulfilled, onRejected),
+    }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDb.transaction.mockImplementation(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx));
@@ -307,6 +318,15 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockAccessService.canUser.mockResolvedValue(false);
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => {
+      const allowed = input.action !== "tasks:manage_active_checkouts";
+      return {
+        allowed,
+        action: input.action,
+        reason: allowed ? "allow_explicit_grant" : "deny_missing_grant",
+        explanation: allowed ? "Allowed by test grant." : "Missing active checkout override.",
+      };
+    });
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockAgentService.getById.mockResolvedValue(null);
     mockAgentService.list.mockResolvedValue([
@@ -732,6 +752,7 @@ describe.sequential("issue comment reopen routes", () => {
         authorType: "user",
         presentation: { kind: "system_notice", tone: "warning", detailsDefaultOpen: false },
         metadata,
+        sourceTrust: null,
       },
     );
   });
