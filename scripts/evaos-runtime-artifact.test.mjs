@@ -17,6 +17,7 @@ import test from "node:test";
 import {
   artifactFileName,
   createArtifactManifest,
+  hydrateEmbeddedPostgresNativeSymlinks,
   linkCliRuntimeExternals,
   parseArtifactArgs,
   patchDeployedPackageVersions,
@@ -69,6 +70,12 @@ test("artifactFileName uses the evaOS runtime naming convention", () => {
     artifactFileName("2026.522.0-canary.0"),
     "evaos-paperclip-runtime-2026.522.0-canary.0-linux-x64.tgz",
   );
+});
+
+test("build script hydrates native links and normalizes tar ownership", async () => {
+  const script = await readFile(new URL("./build-evaos-runtime-artifact.sh", import.meta.url), "utf8");
+  assert.match(script, /hydrate-embedded-postgres-native "\$PACKAGE_ROOT"/);
+  assert.match(script, /tar --owner=0 --group=0 --numeric-owner/);
 });
 
 test("createArtifactManifest records source and checksum metadata", () => {
@@ -210,6 +217,45 @@ test("patchDeployedPackageVersions rewrites the deployed package tree only", asy
     assert.equal(sourceServerPkg.version, "0.3.1");
     assert.equal(sourceServerPkg.exports["."], "./src/index.ts");
     assert.equal((await lstat(serverLinkRoot)).isSymbolicLink(), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("hydrateEmbeddedPostgresNativeSymlinks prepares native links for service-user startup", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-evaos-embedded-postgres-"));
+  const packageRoot = path.join(root, "paperclipai");
+  const postgresRoot = path.join(
+    packageRoot,
+    "node_modules",
+    "@embedded-postgres",
+    "linux-x64",
+  );
+  const nativeLibRoot = path.join(postgresRoot, "native", "lib");
+
+  try {
+    await mkdir(nativeLibRoot, { recursive: true });
+    await writeFile(path.join(nativeLibRoot, "libpq.so.5.18"), "libpq");
+    await writeFile(path.join(nativeLibRoot, "libcrypto.so.1.1"), "crypto");
+    await writeFile(path.join(nativeLibRoot, "libssl.so.1.1"), "ssl");
+    await writeFile(path.join(postgresRoot, "native", "pg-symlinks.json"), JSON.stringify([
+      {
+        source: "native/lib/libpq.so.5.18",
+        target: "native/lib/libpq.so.5",
+      },
+    ]));
+
+    const result = await hydrateEmbeddedPostgresNativeSymlinks(packageRoot);
+
+    assert.equal(result.packageRoot, postgresRoot);
+    assert.deepEqual(result.manifestSymlinks, ["native/lib/libpq.so.5"]);
+    assert.deepEqual(result.nativeAliases, [
+      "native/lib/libcrypto.so.1",
+      "native/lib/libssl.so.1",
+    ]);
+    assert.equal(await readlink(path.join(nativeLibRoot, "libpq.so.5")), "libpq.so.5.18");
+    assert.equal(await readlink(path.join(nativeLibRoot, "libcrypto.so.1")), "libcrypto.so.1.1");
+    assert.equal(await readlink(path.join(nativeLibRoot, "libssl.so.1")), "libssl.so.1.1");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

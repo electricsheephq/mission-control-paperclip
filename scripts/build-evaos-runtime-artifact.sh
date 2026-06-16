@@ -102,6 +102,7 @@ NODE
 if ((${#CLI_RUNTIME_EXTERNALS[@]} > 0)); then
   node "$REPO_ROOT/scripts/evaos-runtime-artifact.mjs" link-cli-externals "$PACKAGE_ROOT" "${CLI_RUNTIME_EXTERNALS[@]}"
 fi
+node "$REPO_ROOT/scripts/evaos-runtime-artifact.mjs" hydrate-embedded-postgres-native "$PACKAGE_ROOT" >/dev/null
 
 if [[ "$SKIP_SMOKE" != "1" ]]; then
   node "$PACKAGE_ROOT/dist/index.js" --version >/dev/null
@@ -112,7 +113,7 @@ if [[ "$SKIP_SMOKE" != "1" ]]; then
 fi
 
 rm -f "$ARTIFACT_PATH" "$SHA_PATH" "$MANIFEST_PATH"
-tar -C "$STAGE_PARENT" -czf "$ARTIFACT_PATH" paperclipai
+tar --owner=0 --group=0 --numeric-owner -C "$STAGE_PARENT" -czf "$ARTIFACT_PATH" paperclipai
 SHA256="$(node "$REPO_ROOT/scripts/evaos-runtime-artifact.mjs" sha256 "$ARTIFACT_PATH")"
 printf '%s  %s\n' "$SHA256" "$ARTIFACT_NAME" >"$SHA_PATH"
 SOURCE_SHA="$(git -C "$REPO_ROOT" rev-parse "$SOURCE_REF^{commit}")"
