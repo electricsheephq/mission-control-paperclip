@@ -69,17 +69,22 @@ jobs:
         run: |
           changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
           manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$'
-          if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
-            pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+          before_hash="$(sha256sum pnpm-lock.yaml | awk '{print $1}')"
+          pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+          after_hash="$(sha256sum pnpm-lock.yaml | awk '{print $1}')"
+          if [[ "$before_hash" != "$after_hash" ]]; then
             echo "regenerated=1" >> "$GITHUB_OUTPUT"
+          elif printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
+            echo "Manifest inputs changed but pnpm-lock.yaml did not require regeneration."
+            echo "regenerated=0" >> "$GITHUB_OUTPUT"
           else
             echo "regenerated=0" >> "$GITHUB_OUTPUT"
           fi
 
-      # Manifest-only PRs (where pnpm-lock.yaml stays at base because the policy
-      # job above blocks committing it) need the regenerated lockfile for the
-      # downstream `pnpm install --frozen-lockfile` steps. Upload it here so
-      # every job consumes the same hash without recomputing.
+      # PRs where pnpm-lock.yaml stays at base because the policy job blocks
+      # committing it still need the regenerated lockfile for downstream
+      # `pnpm install --frozen-lockfile` steps. Upload it here so every job
+      # consumes the same hash without recomputing.
       - name: Upload regenerated lockfile for downstream jobs
         if: steps.regen_lockfile.outputs.regenerated == '1'
         uses: actions/upload-artifact@v4

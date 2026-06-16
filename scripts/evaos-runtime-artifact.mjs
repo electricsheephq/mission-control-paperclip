@@ -6,6 +6,7 @@ import {
   mkdir,
   readdir,
   readFile,
+  readlink,
   realpath,
   rename,
   rm,
@@ -18,12 +19,18 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 
 const PLATFORM = "linux-x64";
+const EMBEDDED_POSTGRES_LINUX_PACKAGE = "@embedded-postgres/linux-x64";
+const EMBEDDED_POSTGRES_NATIVE_ALIASES = [
+  ["libcrypto.so.1.1", "libcrypto.so.1"],
+  ["libssl.so.1.1", "libssl.so.1"],
+];
 
 function usage() {
   return `Usage:
   scripts/build-evaos-runtime-artifact.sh --version VERSION --out-dir DIR [options]
   node scripts/evaos-runtime-artifact.mjs patch-versions PACKAGE_ROOT VERSION
   node scripts/evaos-runtime-artifact.mjs link-cli-externals PACKAGE_ROOT EXTERNAL...
+  node scripts/evaos-runtime-artifact.mjs hydrate-embedded-postgres-native PACKAGE_ROOT
   node scripts/evaos-runtime-artifact.mjs write-manifest OUT VERSION SOURCE_REF SOURCE_SHA ARTIFACT SHA256
 `;
 }
@@ -275,6 +282,79 @@ export async function linkCliRuntimeExternals(packageRoot, externals) {
   return linked;
 }
 
+async function ensureRelativeSymlink(sourcePath, targetPath) {
+  const sourceStat = await stat(sourcePath);
+  if (!sourceStat.isFile()) {
+    throw new Error(`symlink source is not a file: ${sourcePath}`);
+  }
+
+  const relativeSource = path.relative(path.dirname(targetPath), sourcePath);
+  const existing = await lstat(targetPath).catch((err) => {
+    if (err?.code === "ENOENT") return null;
+    throw err;
+  });
+  if (existing) {
+    if (!existing.isSymbolicLink()) return false;
+    const currentTarget = await readlink(targetPath);
+    if (currentTarget === relativeSource) return false;
+    await rm(targetPath);
+  }
+
+  await symlink(relativeSource, targetPath);
+  return true;
+}
+
+async function hydrateEmbeddedPostgresManifestSymlinks(packageRoot) {
+  const manifestPath = path.join(packageRoot, "native", "pg-symlinks.json");
+  let raw;
+  try {
+    raw = await readFile(manifestPath, "utf8");
+  } catch (err) {
+    if (err?.code === "ENOENT") return [];
+    throw err;
+  }
+
+  const created = [];
+  const entries = JSON.parse(raw);
+  if (!Array.isArray(entries)) {
+    throw new Error(`embedded Postgres symlink manifest is not an array: ${manifestPath}`);
+  }
+
+  for (const entry of entries) {
+    if (!entry || typeof entry.source !== "string" || typeof entry.target !== "string") {
+      throw new Error(`embedded Postgres symlink manifest contains an invalid entry: ${manifestPath}`);
+    }
+    const sourcePath = path.join(packageRoot, entry.source);
+    const targetPath = path.join(packageRoot, entry.target);
+    if (await ensureRelativeSymlink(sourcePath, targetPath)) {
+      created.push(entry.target);
+    }
+  }
+  return created;
+}
+
+async function ensureEmbeddedPostgresNativeAliases(packageRoot) {
+  const nativeLibRoot = path.join(packageRoot, "native", "lib");
+  const created = [];
+  for (const [sourceName, targetName] of EMBEDDED_POSTGRES_NATIVE_ALIASES) {
+    const sourcePath = path.join(nativeLibRoot, sourceName);
+    const targetPath = path.join(nativeLibRoot, targetName);
+    if (await ensureRelativeSymlink(sourcePath, targetPath)) {
+      created.push(path.join("native", "lib", targetName));
+    }
+  }
+  return created;
+}
+
+export async function hydrateEmbeddedPostgresNativeSymlinks(packageRoot) {
+  const dependencyRoot = await findDeployedDependencyRoot(packageRoot, EMBEDDED_POSTGRES_LINUX_PACKAGE);
+  return {
+    packageRoot: dependencyRoot,
+    manifestSymlinks: await hydrateEmbeddedPostgresManifestSymlinks(dependencyRoot),
+    nativeAliases: await ensureEmbeddedPostgresNativeAliases(dependencyRoot),
+  };
+}
+
 export async function sha256File(filePath) {
   const hash = createHash("sha256");
   hash.update(await readFile(filePath));
@@ -306,6 +386,15 @@ async function main(argv) {
       throw new Error("link-cli-externals requires PACKAGE_ROOT and at least one EXTERNAL");
     }
     await linkCliRuntimeExternals(packageRoot, externals);
+    return;
+  }
+  if (command === "hydrate-embedded-postgres-native") {
+    const [packageRoot] = rest;
+    if (!packageRoot) {
+      throw new Error("hydrate-embedded-postgres-native requires PACKAGE_ROOT");
+    }
+    const result = await hydrateEmbeddedPostgresNativeSymlinks(packageRoot);
+    console.log(JSON.stringify(result, null, 2));
     return;
   }
   if (command === "sha256") {
