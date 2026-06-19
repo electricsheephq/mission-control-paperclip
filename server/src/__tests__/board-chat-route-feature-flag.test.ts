@@ -2,6 +2,7 @@ import express from "express";
 import { EventEmitter } from "node:events";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { errorHandler } from "../middleware/index.js";
 
 const mockGetExperimental = vi.hoisted(() => vi.fn());
 const mockIssueService = vi.hoisted(() => ({
@@ -19,16 +20,57 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("node:child_process", () => ({ spawn: mockSpawn }));
 
-vi.mock("../routes/authz.js", () => ({
-  getActorInfo: () => ({ actorId: "user-1", agentId: null, runId: null }),
+vi.mock("../routes/authz.js", async () => ({
+  ...await vi.importActual<typeof import("../routes/authz.js")>("../routes/authz.js"),
   assertCompanyAccess: () => {},
 }));
 
-async function createApp(deploymentMode: "local_trusted" | "authenticated" = "local_trusted") {
+function boardActor(): Express.Request["actor"] {
+  return {
+    type: "board",
+    source: "local_implicit",
+    userId: "user-1",
+    companyIds: ["company-1"],
+    isInstanceAdmin: false,
+  };
+}
+
+function agentActor(): Express.Request["actor"] {
+  return {
+    type: "agent",
+    source: "agent_key",
+    agentId: "agent-1",
+    companyId: "company-1",
+    keyId: "key-1",
+  };
+}
+
+function makeFakeProc() {
+  const proc = new EventEmitter() as any;
+  proc.stdout = new EventEmitter();
+  proc.stderr = new EventEmitter();
+  proc.stdin = { write: vi.fn(), end: vi.fn() };
+  proc.exitCode = null;
+  proc.killed = false;
+  proc.kill = vi.fn(() => {
+    proc.killed = true;
+  });
+  return proc;
+}
+
+async function createApp(
+  deploymentMode: "local_trusted" | "authenticated" = "local_trusted",
+  actor: Express.Request["actor"] = boardActor(),
+) {
   const { boardChatRoutes } = await import("../routes/board-chat.js");
   const app = express();
   app.use(express.json());
+  app.use((req, _res, next) => {
+    req.actor = actor;
+    next();
+  });
   app.use("/api", boardChatRoutes({} as any, { deploymentMode }));
+  app.use(errorHandler);
   return app;
 }
 
@@ -79,22 +121,28 @@ describe("POST /api/board/chat/stream feature flag guard (PAP-137)", () => {
     expect(res.status).toBe(400);
     expect(res.body).toEqual({ error: "companyId and message are required" });
   });
+
+  it("rejects agent actors before launching the local board relay", async () => {
+    mockGetExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
+    mockIssueService.list.mockResolvedValue([
+      { id: "issue-1", title: "Board Operations", status: "todo" },
+    ]);
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-1" });
+    mockIssueService.listComments.mockResolvedValue([]);
+    const app = await createApp("local_trusted", agentActor());
+
+    const res = await request(app)
+      .post("/api/board/chat/stream")
+      .send({ companyId: "company-1", message: "hello" });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Board access required" });
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockSpawn).not.toHaveBeenCalled();
+  });
 });
 
 describe("board-chat client disconnect", () => {
-  function makeFakeProc() {
-    const proc = new EventEmitter() as any;
-    proc.stdout = new EventEmitter();
-    proc.stderr = new EventEmitter();
-    proc.stdin = { write: vi.fn(), end: vi.fn() };
-    proc.exitCode = null;
-    proc.killed = false;
-    proc.kill = vi.fn(() => {
-      proc.killed = true;
-    });
-    return proc;
-  }
-
   it("kills the spawned subprocess when the client disconnects mid-stream", async () => {
     mockGetExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
     mockIssueService.list.mockResolvedValue([
