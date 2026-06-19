@@ -2,13 +2,13 @@
   "name": "@paperclipai/server",
   "version": "0.3.1",
   "license": "MIT",
-  "homepage": "https://github.com/electricsheephq/mission-control-paperclip",
+  "homepage": "https://github.com/paperclipai/paperclip",
   "bugs": {
-    "url": "https://github.com/electricsheephq/mission-control-paperclip/issues"
+    "url": "https://github.com/paperclipai/paperclip/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/electricsheephq/mission-control-paperclip",
+    "url": "https://github.com/paperclipai/paperclip",
     "directory": "server"
   },
   "type": "module",
@@ -68,7 +68,6 @@
     "drizzle-orm": "^0.45.2",
     "embedded-postgres": "^18.1.0-beta.16",
     "express": "^5.1.0",
-    "express-rate-limit": "8.3.2",
     "hermes-paperclip-adapter": "^0.2.0",
     "jsdom": "^28.1.0",
     "multer": "^2.1.1",

@@ -332,11 +332,19 @@ main().catch((error) => {
 EOF
 }
 
-if [[ -e "$worktree_config_path" && -e "$worktree_env_path" ]]; then
+worktree_config_ready() {
+  [[ -e "$worktree_config_path" && -e "$worktree_env_path" ]]
+}
+
+if worktree_config_ready; then
   echo "Reusing existing isolated Paperclip worktree config at $worktree_config_path" >&2
 else
   if paperclipai_command_available; then
     run_isolated_worktree_init
+    if ! worktree_config_ready; then
+      echo "paperclipai CLI did not create isolated worktree config; writing fallback config without DB seeding." >&2
+      write_fallback_worktree_config
+    fi
   else
     echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
     write_fallback_worktree_config
