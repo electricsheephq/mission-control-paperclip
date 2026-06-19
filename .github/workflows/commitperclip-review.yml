@@ -5,7 +5,7 @@ on:
     types: [opened, synchronize, reopened]
 
 # Always runs from base branch context — never executes PR code.
-# pull_request_target gives access to secrets for untrusted fork PRs.
+# pull_request_target gives access to secrets for untrusted fork PRs when configured.
 
 permissions:
   pull-requests: write
@@ -34,8 +34,21 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Detect commitperclip key
+        id: commitperclip_key
+        run: |
+          if [ -n "$COMMITPERCLIP_KEY" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::COMMITPERCLIP_KEY is not configured; skipping commitperclip GitHub App quality/security gates."
+          fi
+        env:
+          COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+
       - name: Generate commitperclip token
         id: token
+        if: steps.commitperclip_key.outputs.available == 'true'
         run: |
           TOKEN=$(node .github/scripts/get-bot-token.mjs)
           echo "::add-mask::$TOKEN"
@@ -43,9 +56,15 @@ jobs:
         env:
           COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
 
+      - name: Skip commitperclip app gates
+        if: steps.commitperclip_key.outputs.available != 'true'
+        run: echo "COMMITPERCLIP_KEY is not configured; dependency review ran, commitperclip app-token gates skipped for this fork."
+
       - name: Run quality gates
         id: quality
-        if: github.event.pull_request.user.login != 'dependabot[bot]'
+        if: >-
+          steps.commitperclip_key.outputs.available == 'true' &&
+          github.event.pull_request.user.login != 'dependabot[bot]'
         run: node .github/scripts/run-quality-gates.mjs
         continue-on-error: true
         env:
@@ -56,6 +75,7 @@ jobs:
           PR_BRANCH: ${{ github.event.pull_request.head.ref }}
 
       - name: Run security gates
+        if: steps.commitperclip_key.outputs.available == 'true'
         run: node .github/scripts/check-pr-security.mjs
         continue-on-error: true
         timeout-minutes: 3
@@ -67,6 +87,7 @@ jobs:
 
       - name: Fail if quality gates failed
         if: >-
+          steps.commitperclip_key.outputs.available == 'true' &&
           github.event.pull_request.user.login != 'dependabot[bot]' &&
           steps.quality.outcome == 'failure'
         run: |
