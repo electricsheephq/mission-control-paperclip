@@ -3,13 +3,13 @@
   "version": "0.3.1",
   "description": "Prebuilt Paperclip board UI assets.",
   "license": "MIT",
-  "homepage": "https://github.com/electricsheephq/mission-control-paperclip",
+  "homepage": "https://github.com/paperclipai/paperclip",
   "bugs": {
-    "url": "https://github.com/electricsheephq/mission-control-paperclip/issues"
+    "url": "https://github.com/paperclipai/paperclip/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/electricsheephq/mission-control-paperclip",
+    "url": "https://github.com/paperclipai/paperclip",
     "directory": "ui"
   },
   "type": "module",

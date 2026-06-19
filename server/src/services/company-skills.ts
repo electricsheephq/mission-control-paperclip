@@ -2973,7 +2973,9 @@ export function companySkillService(db: Db) {
       // An explicit "."/"" repoSkillDir means SKILL.md lives at the repo root;
       // only fall back to the slug subdirectory when metadata is absent.
       const repoSkillDir = typeof metadata.repoSkillDir === "string"
-        ? normalizeGitHubSkillDirectory(rawRepoSkillDir, "")
+        ? rawRepoSkillDir === "" || rawRepoSkillDir === "."
+          ? ""
+          : normalizeGitHubSkillDirectory(rawRepoSkillDir, "")
         : normalizeGitHubSkillDirectory(rawRepoSkillDir, skill.slug);
       if (!owner || !repo) {
         throw unprocessable("Skill source metadata is incomplete.");

@@ -1023,8 +1023,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         })
     );
     expect(issue?.executionRunId).toBe(retryRun?.id ?? null);
-    // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
-    expect(issue?.checkoutRunId).toBeNull();
+    // Terminal run cleanup releases the stale checkout lock. The retry may
+    // already have started and taken a fresh checkout by the time the
+    // assertion observes the row; the invariant is that the dead run no
+    // longer owns checkout.
+    expect(issue?.checkoutRunId).not.toBe(runId);
+    if (issue?.checkoutRunId) {
+      expect(issue.checkoutRunId).toBe(retryRun?.id);
+    }
   });
 
   it("releases active environment leases when an orphaned run is reaped", async () => {
@@ -1425,8 +1431,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
     expect(recoveryAction?.nextAction).toContain("Repair the source issue workspace link");
 
-    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments.some((comment) => comment.body.includes("workspace failed validation"))).toBe(true);
+    const recoveryComment = await waitForValue(async () => {
+      const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+      return comments.find((comment) => comment.body.includes("workspace failed validation")) ?? null;
+    });
+    expect(recoveryComment.body).toContain("workspace failed validation");
   });
 
   it("queues one finish-handoff wake when a successful run leaves in-progress work without a next action", async () => {

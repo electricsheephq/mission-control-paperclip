@@ -12,3 +12,11 @@ packages:
   - server
   - ui
   - cli
+
+overrides:
+  "@assistant-ui/core": 0.2.10
+  "@assistant-ui/store": 0.2.13
+  rollup: ">=4.59.0"
+
+patchedDependencies:
+  "embedded-postgres@18.1.0-beta.16": patches/embedded-postgres@18.1.0-beta.16.patch
