@@ -1,3 +1,13 @@
+<!-- FORK-IDENTITY: evaOS maintained fork — do not remove without updating docs/fleet-contract references -->
+> **⚠️ This is `electricsheephq/mission-control-paperclip` — evaOS's maintained fork of [Paperclip](https://github.com/paperclipai/paperclip).**
+>
+> All links below (`paperclip.ing`, `paperclipai/paperclip`, Discord, Twitter) point to the **UPSTREAM** project, not to evaOS. evaOS maintains this fork as the Paperclip sidecar inside the HireEva / ElectricSheep customer fleet.
+>
+> - **Fleet install/deploy flows through the evaOS golden runtime + fleet-rollout path**, not the upstream Quickstart below. See `evaos-support-control/docs/fleet-contract.md`.
+> - **Upstream:** https://github.com/paperclipai/paperclip — credit and upstream issues belong there.
+
+---
+
 <p align="center">
   <img src="doc/assets/banner.jpg" alt="Paperclip is the app people use to manage AI agents for work." width="720" />
 </p>
