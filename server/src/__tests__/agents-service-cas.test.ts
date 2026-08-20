@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agentConfigRevisions, agents, companies, createDb } from "@paperclipai/db";
+import { agentConfigRevisions, agents, companies, createDb, environments } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.ts";
 import { nextAgentUpdatedAt } from "../services/agent-updated-at.ts";
+import { environmentService } from "../services/environments.ts";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePg = support.supported ? describe : describe.skip;
@@ -14,7 +15,7 @@ describePg("agent service PATCH CAS", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   beforeAll(async () => { tempDb = await startEmbeddedPostgresTestDatabase("paperclip-agent-cas-"); db = createDb(tempDb.connectionString); }, 20_000);
-  afterEach(async () => { await db.delete(agentConfigRevisions); await db.delete(agents); await db.delete(companies); });
+  afterEach(async () => { await db.delete(agentConfigRevisions); await db.delete(agents); await db.delete(environments); await db.delete(companies); });
   afterAll(async () => { await tempDb?.cleanup(); });
 
   async function seed(config: Record<string, unknown> = {}, updatedAt = new Date()) {
@@ -56,6 +57,21 @@ describePg("agent service PATCH CAS", () => {
     const second = await row(s.agentId);
     expect(first.updatedAt.getTime()).toBeGreaterThan(initial.updatedAt.getTime()); expect(second.updatedAt.getTime()).toBeGreaterThan(first.updatedAt.getTime());
     await expect(service.update(s.agentId, { name: "Stale" }, { expectedUpdatedAt: initial.updatedAt })).rejects.toMatchObject({ status: 409, message: "agent_revision_conflict" });
+  });
+
+  it("advances the agent revision when deleting its default environment", async () => {
+    const companyId = randomUUID(); const agentId = randomUUID(); const environmentId = randomUUID();
+    const at = new Date("2026-08-20T01:02:03.004Z");
+    await db.insert(companies).values({ id: companyId, name: "Paperclip", issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6)}`, requireBoardApprovalForNewAgents: false });
+    await db.insert(environments).values({ id: environmentId, companyId, name: "Default", driver: "local", status: "active", config: {} });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Coder", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {}, defaultEnvironmentId: environmentId, updatedAt: at });
+
+    await environmentService(db).remove(environmentId);
+
+    const current = await row(agentId);
+    expect(current.defaultEnvironmentId).toBeNull();
+    expect(current.updatedAt.getTime()).toBeGreaterThan(at.getTime());
+    await expect(agentService(db).update(agentId, { name: "Stale" }, { expectedUpdatedAt: at })).rejects.toMatchObject({ status: 409, message: "agent_revision_conflict" });
   });
 
   it("rolls back the agent when config revision insertion fails", async () => {
