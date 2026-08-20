@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { agentConfigRevisions, agents, companies, createDb } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.ts";
@@ -46,11 +46,16 @@ describePg("agent service PATCH CAS", () => {
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1); expect(results.find((r) => r.status === "rejected")).toMatchObject({ reason: { status: 409, message: "agent_revision_conflict" } }); expect(["A", "B"]).toContain((await row(s.agentId)).name);
   });
 
-  it("rejects stale CAS after a same-millisecond non-CAS agent writer", async () => {
+  it("advances API-visible revisions across PostgreSQL microseconds and rejects stale CAS", async () => {
     const at = new Date("2026-08-20T01:02:03.004Z"); const s = await seed({}, at); const service = agentService(db);
+    await db.execute(sql`UPDATE ${agents} SET updated_at = '2026-08-20T01:02:03.004500Z'::timestamptz WHERE ${agents.id} = ${s.agentId}`);
+    const initial = await row(s.agentId);
     await db.update(agents).set({ status: "running", updatedAt: nextAgentUpdatedAt() }).where(eq(agents.id, s.agentId));
-    expect((await row(s.agentId)).updatedAt.getTime()).toBeGreaterThan(at.getTime());
-    await expect(service.update(s.agentId, { name: "Stale" }, { expectedUpdatedAt: at })).rejects.toMatchObject({ status: 409, message: "agent_revision_conflict" });
+    const first = await row(s.agentId);
+    await db.update(agents).set({ status: "idle", updatedAt: nextAgentUpdatedAt() }).where(eq(agents.id, s.agentId));
+    const second = await row(s.agentId);
+    expect(first.updatedAt.getTime()).toBeGreaterThan(initial.updatedAt.getTime()); expect(second.updatedAt.getTime()).toBeGreaterThan(first.updatedAt.getTime());
+    await expect(service.update(s.agentId, { name: "Stale" }, { expectedUpdatedAt: initial.updatedAt })).rejects.toMatchObject({ status: 409, message: "agent_revision_conflict" });
   });
 
   it("rolls back the agent when config revision insertion fails", async () => {
