@@ -62,6 +62,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { nextAgentUpdatedAt } from "../agent-updated-at.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["failed", "cancelled", "timed_out"] as const;
@@ -1189,7 +1190,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .set({
         status: nextStatus,
         lastHeartbeatAt: new Date(),
-        updatedAt: new Date(),
+        updatedAt: nextAgentUpdatedAt(),
       })
       .where(and(eq(agents.id, run.agentId), notInArray(agents.status, ["paused", "terminated"])));
   }

@@ -33,6 +33,7 @@ import { notFound, unprocessable } from "../errors.js";
 import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
+import { nextAgentUpdatedAt } from "./agent-updated-at.js";
 
 export interface CompanyActivityActor {
   actorType: "user" | "agent" | "system" | "plugin";
@@ -62,7 +63,7 @@ export function companyService(db: Db) {
         status: "paused",
         pauseReason: "company_archived",
         pausedAt: new Date(),
-        updatedAt: new Date(),
+        updatedAt: nextAgentUpdatedAt(),
       })
       .where(and(
         eq(agents.companyId, id),
@@ -313,7 +314,7 @@ export function companyService(db: Db) {
               status: "idle",
               pauseReason: null,
               pausedAt: null,
-              updatedAt: new Date(),
+              updatedAt: nextAgentUpdatedAt(),
             })
             .where(and(
               eq(agents.companyId, id),

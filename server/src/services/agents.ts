@@ -28,6 +28,7 @@ import {
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
+import { nextAgentUpdatedAt } from "./agent-updated-at.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -62,6 +63,7 @@ interface RevisionMetadata {
 }
 
 interface UpdateAgentOptions {
+  expectedUpdatedAt?: Date;
   recordRevision?: RevisionMetadata;
 }
 
@@ -436,35 +438,54 @@ export function agentService(db: Db) {
     }
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
-    const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
+    const updated = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      await tx.execute(sql`select ${agents.id} from ${agents} where ${agents.id} = ${id} for update`);
+      const locked = await txDb
+        .select()
+        .from(agents)
+        .where(eq(agents.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!locked) return null;
 
-    const updated = await db
-      .update(agents)
-      .set({ ...normalizedPatch, updatedAt: new Date() })
-      .where(eq(agents.id, id))
-      .returning()
-      .then((rows) => rows[0] ?? null);
-    const normalizedUpdated = updated ? await getById(updated.id) : null;
-
-    if (normalizedUpdated && shouldRecordRevision && beforeConfig) {
-      const afterConfig = buildConfigSnapshot(normalizedUpdated);
-      const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);
-      if (changedKeys.length > 0) {
-        await db.insert(agentConfigRevisions).values({
-          companyId: normalizedUpdated.companyId,
-          agentId: normalizedUpdated.id,
-          createdByAgentId: options?.recordRevision?.createdByAgentId ?? null,
-          createdByUserId: options?.recordRevision?.createdByUserId ?? null,
-          source: options?.recordRevision?.source ?? "patch",
-          rolledBackFromRevisionId: options?.recordRevision?.rolledBackFromRevisionId ?? null,
-          changedKeys,
-          beforeConfig: beforeConfig as unknown as Record<string, unknown>,
-          afterConfig: afterConfig as unknown as Record<string, unknown>,
-        });
+      if (
+        options?.expectedUpdatedAt
+        && locked.updatedAt.getTime() !== options.expectedUpdatedAt.getTime()
+      ) {
+        throw conflict("agent_revision_conflict");
       }
-    }
 
-    return normalizedUpdated;
+      const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(locked) : null;
+      const updatedAt = new Date(Math.max(Date.now(), locked.updatedAt.getTime() + 1));
+      const next = await txDb
+        .update(agents)
+        .set({ ...normalizedPatch, updatedAt })
+        .where(eq(agents.id, id))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      if (!next) return null;
+
+      if (shouldRecordRevision && beforeConfig) {
+        const afterConfig = buildConfigSnapshot(next);
+        const changedKeys = diffConfigSnapshot(beforeConfig, afterConfig);
+        if (changedKeys.length > 0) {
+          await txDb.insert(agentConfigRevisions).values({
+            companyId: next.companyId,
+            agentId: next.id,
+            createdByAgentId: options?.recordRevision?.createdByAgentId ?? null,
+            createdByUserId: options?.recordRevision?.createdByUserId ?? null,
+            source: options?.recordRevision?.source ?? "patch",
+            rolledBackFromRevisionId: options?.recordRevision?.rolledBackFromRevisionId ?? null,
+            changedKeys,
+            beforeConfig: beforeConfig as unknown as Record<string, unknown>,
+            afterConfig: afterConfig as unknown as Record<string, unknown>,
+          });
+        }
+      }
+      return next;
+    });
+
+    return updated ? await getById(updated.id) : null;
   }
 
   return {
@@ -519,7 +540,7 @@ export function agentService(db: Db) {
           status: "paused",
           pauseReason: reason,
           pausedAt: new Date(),
-          updatedAt: new Date(),
+          updatedAt: nextAgentUpdatedAt(),
         })
         .where(eq(agents.id, id))
         .returning()
@@ -541,7 +562,7 @@ export function agentService(db: Db) {
           status: "idle",
           pauseReason: null,
           pausedAt: null,
-          updatedAt: new Date(),
+          updatedAt: nextAgentUpdatedAt(),
         })
         .where(eq(agents.id, id))
         .returning()
@@ -566,7 +587,7 @@ export function agentService(db: Db) {
           status: "idle",
           pauseReason: null,
           pausedAt: null,
-          updatedAt: new Date(),
+          updatedAt: nextAgentUpdatedAt(),
         })
         .where(and(eq(agents.id, id), eq(agents.status, "error")))
         .returning()
@@ -588,7 +609,7 @@ export function agentService(db: Db) {
           status: "terminated",
           pauseReason: null,
           pausedAt: null,
-          updatedAt: new Date(),
+          updatedAt: nextAgentUpdatedAt(),
         })
         .where(eq(agents.id, id));
 
@@ -605,7 +626,10 @@ export function agentService(db: Db) {
       if (!existing) return null;
 
       return db.transaction(async (tx) => {
-        await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
+        await tx
+          .update(agents)
+          .set({ reportsTo: null, updatedAt: nextAgentUpdatedAt() })
+          .where(eq(agents.reportsTo, id));
         await tx
           .update(issues)
           .set({ assigneeAgentId: null, createdByAgentId: null })
@@ -636,7 +660,7 @@ export function agentService(db: Db) {
     activatePendingApproval: async (id: string) => {
       const updated = await db
         .update(agents)
-        .set({ status: "idle", updatedAt: new Date() })
+        .set({ status: "idle", updatedAt: nextAgentUpdatedAt() })
         .where(and(eq(agents.id, id), eq(agents.status, "pending_approval")))
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -657,7 +681,7 @@ export function agentService(db: Db) {
         .update(agents)
         .set({
           permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }, existing.role),
-          updatedAt: new Date(),
+          updatedAt: nextAgentUpdatedAt(),
         })
         .where(eq(agents.id, id))
         .returning()

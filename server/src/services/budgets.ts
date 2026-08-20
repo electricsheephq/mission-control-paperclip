@@ -24,6 +24,7 @@ import type {
 } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
+import { nextAgentUpdatedAt } from "./agent-updated-at.js";
 
 type ScopeRecord = {
   companyId: string;
@@ -220,7 +221,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           status: "paused",
           pauseReason: "budget",
           pausedAt: now,
-          updatedAt: now,
+          updatedAt: nextAgentUpdatedAt(),
         })
         .where(and(eq(agents.id, policy.scopeId), inArray(agents.status, ["active", "idle", "running", "error"])));
       return;
@@ -267,7 +268,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           status: "idle",
           pauseReason: null,
           pausedAt: null,
-          updatedAt: now,
+          updatedAt: nextAgentUpdatedAt(),
         })
         .where(and(eq(agents.id, policy.scopeId), eq(agents.pauseReason, "budget")));
       return;
@@ -582,7 +583,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
           .update(agents)
           .set({
             budgetMonthlyCents: amount,
-            updatedAt: now,
+            updatedAt: nextAgentUpdatedAt(),
           })
           .where(eq(agents.id, input.scopeId));
       }
@@ -905,7 +906,7 @@ export function budgetService(db: Db, hooks: BudgetServiceHooks = {}) {
         if (policy.scopeType === "agent" && policy.windowKind === "calendar_month_utc") {
           await db
             .update(agents)
-            .set({ budgetMonthlyCents: nextAmount, updatedAt: now })
+            .set({ budgetMonthlyCents: nextAmount, updatedAt: nextAgentUpdatedAt() })
             .where(eq(agents.id, policy.scopeId));
         }
 

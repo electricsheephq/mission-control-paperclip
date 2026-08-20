@@ -38,6 +38,7 @@ import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
 import { budgetService } from "./budgets.js";
+import { nextAgentUpdatedAt } from "./agent-updated-at.js";
 import { issueApprovalService } from "./issue-approvals.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { createHash, randomInt, randomUUID } from "node:crypto";
@@ -2439,7 +2440,7 @@ export function buildHostServices(
           else delete permissions.authorizationPolicy;
           await db
             .update(agentsTable)
-            .set({ permissions, updatedAt: new Date() })
+            .set({ permissions, updatedAt: nextAgentUpdatedAt() })
             .where(eq(agentsTable.id, agent.id));
         } else if (params.resourceType === "project") {
           const project = requireInCompany("Project", await projects.getById(params.resourceId), companyId);

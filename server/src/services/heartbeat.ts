@@ -73,6 +73,7 @@ import { trackAgentFirstHeartbeat } from "@paperclipai/shared/telemetry";
 import { getTelemetryClient } from "../telemetry.js";
 import { companySkillService } from "./company-skills.js";
 import { budgetService, type BudgetEnforcementScope } from "./budgets.js";
+import { nextAgentUpdatedAt } from "./agent-updated-at.js";
 import { secretService } from "./secrets.js";
 import { resolveDefaultAgentWorkspaceDir, resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import {
@@ -7307,7 +7308,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .set({
         status: nextStatus,
         lastHeartbeatAt: new Date(),
-        updatedAt: new Date(),
+        updatedAt: nextAgentUpdatedAt(),
       })
       .where(eq(agents.id, agentId))
       .returning()
@@ -8953,7 +8954,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const runningAgent = await db
         .update(agents)
-        .set({ status: "running", updatedAt: new Date() })
+        .set({ status: "running", updatedAt: nextAgentUpdatedAt() })
         .where(eq(agents.id, agent.id))
         .returning()
         .then((rows) => rows[0] ?? null);
