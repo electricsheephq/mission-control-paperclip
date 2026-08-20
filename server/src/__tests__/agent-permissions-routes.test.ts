@@ -822,6 +822,34 @@ describe.sequential("agent permission routes", () => {
     expect(mockLogActivity).not.toHaveBeenCalled();
   }, 15_000);
 
+  it("blocks agent-authenticated replacement that clears instructions bundle config", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: {
+        instructionsBundleMode: "managed",
+        instructionsRootPath: "/tmp/agent/instructions",
+        instructionsEntryFile: "AGENTS.md",
+        instructionsFilePath: "/tmp/agent/instructions/AGENTS.md",
+      },
+    });
+    const app = await createApp({
+      type: "agent",
+      agentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}`)
+      .send({ replaceAdapterConfig: true, adapterConfig: { model: "safe-model" } }));
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toContain("instructions path or bundle configuration");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+  }, 15_000);
+
   it("blocks agent-authenticated instructions-path updates", async () => {
     const app = await createApp({
       type: "agent",

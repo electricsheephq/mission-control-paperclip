@@ -375,6 +375,12 @@ describe("agent instructions bundle routes", () => {
         instructionsRootPath: "/tmp/agent-1",
         instructionsEntryFile: "AGENTS.md",
         instructionsFilePath: "/tmp/agent-1/AGENTS.md",
+        env: { LEGACY: "remove-me" },
+        cwd: "/tmp/legacy",
+        timeoutSec: 7200,
+        graceSec: 30,
+        promptTemplate: "legacy prompt",
+        bootstrapPromptTemplate: "legacy bootstrap",
         model: "gpt-5.4",
       },
     });
@@ -383,18 +389,44 @@ describe("agent instructions bundle routes", () => {
       .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
       .send({
         replaceAdapterConfig: true,
+        adapterType: "claude_local",
         adapterConfig: {
-          command: "codex --profile engineer",
+          model: "claude-sonnet-4",
         },
       }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body.adapterConfig).toMatchObject({
-      command: "codex --profile engineer",
+      model: "claude-sonnet-4",
     });
     expect(res.body.adapterConfig.instructionsBundleMode).toBeUndefined();
     expect(res.body.adapterConfig.instructionsRootPath).toBeUndefined();
     expect(res.body.adapterConfig.instructionsEntryFile).toBeUndefined();
     expect(res.body.adapterConfig.instructionsFilePath).toBeUndefined();
+    expect(res.body.adapterConfig.env).toBeUndefined();
+    expect(res.body.adapterConfig.cwd).toBeUndefined();
+    expect(res.body.adapterConfig.timeoutSec).toBeUndefined();
+    expect(res.body.adapterConfig.graceSec).toBeUndefined();
+    expect(res.body.adapterConfig.promptTemplate).toBeUndefined();
+    expect(res.body.adapterConfig.bootstrapPromptTemplate).toBeUndefined();
   });
+
+  it("forwards expectedUpdatedAt and returns a secret-free stale conflict", async () => {
+    const updatedAt = new Date("2026-08-20T01:02:03.004Z");
+    mockAgentService.getById.mockResolvedValue({ ...makeAgent(), updatedAt });
+    const app = await createApp();
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({ name: "new", expectedUpdatedAt: updatedAt.toISOString() }));
+    expect(res.status).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ name: "new" }), expect.objectContaining({ expectedUpdatedAt: updatedAt }));
+
+    const { conflict } = await vi.importActual<typeof import("../errors.js")>("../errors.js");
+    mockAgentService.update.mockRejectedValue(conflict("agent_revision_conflict"));
+    const stale = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch("/api/agents/11111111-1111-4111-8111-111111111111?companyId=company-1")
+      .send({ name: "stale", expectedUpdatedAt: updatedAt.toISOString() }));
+    expect(stale.status).toBe(409); expect(stale.body).toEqual({ error: "agent_revision_conflict" });
+  });
+
 });

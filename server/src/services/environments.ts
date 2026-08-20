@@ -1,6 +1,6 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { environmentLeases, environments } from "@paperclipai/db";
+import { agents, environmentLeases, environments } from "@paperclipai/db";
 import {
   ENVIRONMENT_DRIVERS,
   ENVIRONMENT_LEASE_CLEANUP_STATUSES,
@@ -15,6 +15,7 @@ import {
   type EnvironmentLeaseStatus,
   type UpdateEnvironment,
 } from "@paperclipai/shared";
+import { nextAgentUpdatedAt } from "./agent-updated-at.js";
 
 type EnvironmentRow = typeof environments.$inferSelect;
 type EnvironmentLeaseRow = typeof environmentLeases.$inferSelect;
@@ -348,11 +349,21 @@ export function environmentService(db: Db) {
     },
 
     remove: async (id: string): Promise<Environment | null> => {
-      const row = await db
-        .delete(environments)
-        .where(eq(environments.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const row = await db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        await tx.execute(
+          sql`select ${environments.id} from ${environments} where ${environments.id} = ${id} for update`,
+        );
+        await txDb
+          .update(agents)
+          .set({ updatedAt: nextAgentUpdatedAt() })
+          .where(eq(agents.defaultEnvironmentId, id));
+        return txDb
+          .delete(environments)
+          .where(eq(environments.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+      });
       return row ? toEnvironment(row) : null;
     },
 
