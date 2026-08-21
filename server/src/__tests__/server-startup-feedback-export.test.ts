@@ -1,13 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
+const ORIGINAL_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP;
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const itWithEmbeddedPostgres = embeddedPostgresSupport.supported ? it : it.skip;
 
 const {
   createAppMock,
@@ -32,6 +40,7 @@ const {
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
   routineServiceMock,
+  reconcileBuiltInAgentsOnStartupMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
@@ -109,6 +118,16 @@ const {
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   };
   const routineServiceFactoryMock = vi.fn(() => routineServiceMock);
+  const reconcileBuiltInAgentsOnStartupMock = vi.fn(async (_db?: unknown) => ({
+    scanned: 0,
+    reconciled: 0,
+    unknown: 0,
+    duplicates: 0,
+    autoEnsured: 0,
+    pendingApprovals: 0,
+    defaultGrantsEnsured: 0,
+    companyFailures: 0,
+  }));
   const feedbackExportServiceMock = {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
@@ -147,6 +166,7 @@ const {
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
     routineServiceMock,
+    reconcileBuiltInAgentsOnStartupMock,
   };
 });
 
@@ -199,20 +219,20 @@ vi.mock("detect-port", () => ({
   default: detectPortMock,
 }));
 
-vi.mock("@paperclipai/db", () => ({
-  createDb: createDbMock,
-  ensurePostgresDatabase: vi.fn(),
-  getPostgresDataDirectory: vi.fn(),
-  inspectMigrations: vi.fn(async () => ({ status: "upToDate" })),
-  applyPendingMigrations: vi.fn(),
-  reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
-  formatDatabaseBackupResult: vi.fn(() => "ok"),
-  runDatabaseBackup: vi.fn(),
-  authUsers: {},
-  companies: {},
-  companyMemberships: {},
-  instanceUserRoles: {},
-}));
+vi.mock("@paperclipai/db", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/db")>();
+  return {
+    ...actual,
+    createDb: createDbMock,
+    ensurePostgresDatabase: vi.fn(),
+    getPostgresDataDirectory: vi.fn(),
+    inspectMigrations: vi.fn(async () => ({ status: "upToDate" })),
+    applyPendingMigrations: vi.fn(),
+    reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
+    formatDatabaseBackupResult: vi.fn(() => "ok"),
+    runDatabaseBackup: vi.fn(),
+  };
+});
 
 vi.mock("../app.js", () => ({
   createApp: createAppMock,
@@ -293,12 +313,7 @@ vi.mock("../services/index.js", () => ({
     failed: 0,
     seededAgentIds: [],
   })),
-  reconcileBuiltInAgentsOnStartup: vi.fn(async () => ({
-    scanned: 0,
-    reconciled: 0,
-    unknown: 0,
-    duplicates: 0,
-  })),
+  reconcileBuiltInAgentsOnStartup: reconcileBuiltInAgentsOnStartupMock,
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
@@ -350,9 +365,23 @@ vi.mock("../auth/better-auth.js", () => ({
 
 import { startServer } from "../index.ts";
 
+afterEach(() => {
+  if (ORIGINAL_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP === undefined) {
+    delete process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP;
+  } else {
+    process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = ORIGINAL_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP;
+  }
+});
+
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    createDbMock.mockReturnValue({
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({ where: vi.fn(async () => []) })),
+      })),
+    } as never);
+    delete process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP;
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "0123456789abcdef0123456789abcdef";
     loadConfigMock.mockReturnValue(buildTestConfig());
@@ -458,6 +487,7 @@ describe("startServer feedback export wiring", () => {
     const started = await startServer();
 
     expect(started.server).toBe(fakeServer);
+    expect(reconcileBuiltInAgentsOnStartupMock).toHaveBeenCalledTimes(1);
     expect(feedbackServiceFactoryMock).toHaveBeenCalledTimes(1);
     expect(createAppMock).toHaveBeenCalledTimes(1);
     expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({
@@ -466,6 +496,111 @@ describe("startServer feedback export wiring", () => {
       serverPort: 3210,
     });
   });
+
+  it("skips built-in agent startup reconciliation when explicitly disabled", async () => {
+    process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = "0";
+
+    const started = await startServer();
+
+    expect(started.server).toBe(fakeServer);
+    expect(reconcileBuiltInAgentsOnStartupMock).not.toHaveBeenCalled();
+    expect(createAppMock).toHaveBeenCalledTimes(1);
+  });
+
+  itWithEmbeddedPostgres("preserves persisted four-company seven-agent state across startup and restart when disabled", async () => {
+    process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = "0";
+    const actual = await vi.importActual<typeof import("@paperclipai/db")>("@paperclipai/db");
+    const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-startup-preservation-");
+    const db = actual.createDb(tempDb.connectionString);
+    const companyIds = Array.from({ length: 4 }, () => randomUUID());
+    const agentIds = Array.from({ length: 7 }, () => randomUUID());
+    const runId = randomUUID();
+    const trackedTables = [
+      actual.companies,
+      actual.agents,
+      actual.issues,
+      actual.heartbeatRuns,
+      actual.principalPermissionGrants,
+      actual.approvals,
+      actual.activityLog,
+      actual.builtInManagedResources,
+      actual.agentConfigRevisions,
+    ];
+    const snapshot = async () => Promise.all(trackedTables.map(async (table) => {
+      const rows = await (db as any).select().from(table);
+      return JSON.parse(JSON.stringify(rows)).sort((left: { id: string }, right: { id: string }) => left.id.localeCompare(right.id));
+    }));
+
+    try {
+      await db.insert(actual.companies).values(companyIds.map((id, index) => ({
+        id,
+        name: `Preserved company ${index + 1}`,
+        issuePrefix: `P${index + 1}`,
+      })));
+      await db.insert(actual.agents).values(agentIds.map((id, index) => ({
+        id,
+        companyId: companyIds[index % companyIds.length]!,
+        name: `Preserved agent ${index + 1}`,
+        status: "paused",
+        adapterType: index < 4 ? "openclaw_gateway" : "hermes_local",
+        adapterConfig: index < 4
+          ? { url: `http://127.0.0.1:${18790 + index}`, timeoutSec: 7200 }
+          : { profile: `profile-${index + 1}`, timeoutSec: 7200, persistSession: true },
+        metadata: index === 6
+          ? { paperclipBuiltInAgent: { key: "reflection-coach" }, custom: "preserve" }
+          : { custom: `agent-${index + 1}` },
+      })));
+      await db.insert(actual.issues).values({ id: randomUUID(), companyId: companyIds[0]!, title: "Preserve issue", status: "todo" });
+      await db.insert(actual.heartbeatRuns).values({ id: runId, companyId: companyIds[0]!, agentId: agentIds[0]!, status: "failed" });
+      await db.insert(actual.principalPermissionGrants).values({ companyId: companyIds[0]!, principalType: "agent", principalId: agentIds[0]!, permissionKey: "tasks:assign" });
+      await db.insert(actual.approvals).values({ companyId: companyIds[1]!, type: "hire_agent", status: "pending", payload: { preserve: true } });
+      await db.insert(actual.activityLog).values({ companyId: companyIds[2]!, actorId: "system", action: "agent.paused", entityType: "agent", entityId: agentIds[2]!, agentId: agentIds[2]!, runId });
+      await db.insert(actual.builtInManagedResources).values({ companyId: companyIds[2]!, bundleKey: "reflection-coach", resourceKind: "agent", resourceKey: "primary", resourceId: agentIds[6]!, stockVersion: "custom", stockHash: "preserve", defaultsJson: { preserve: true } });
+      await db.insert(actual.agentConfigRevisions).values({ companyId: companyIds[2]!, agentId: agentIds[6]!, source: "patch", changedKeys: ["metadata"], beforeConfig: { custom: "before" }, afterConfig: { custom: "preserve" } });
+      createDbMock.mockReturnValue(db as never);
+      loadConfigMock.mockReturnValue(buildTestConfig({ databaseUrl: tempDb.connectionString }));
+      const before = await snapshot();
+
+      await startServer();
+      await startServer();
+
+      expect(reconcileBuiltInAgentsOnStartupMock).not.toHaveBeenCalled();
+      expect(await snapshot()).toEqual(before);
+    } finally {
+      await tempDb.cleanup();
+    }
+  }, 30_000);
+
+  it("keeps built-in agent startup reconciliation enabled when explicitly set to one", async () => {
+    process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = "1";
+
+    await startServer();
+
+    expect(reconcileBuiltInAgentsOnStartupMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["", "true", "2", "secret-value"])(
+    "rejects invalid PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP=%j without exposing its value",
+    async (value) => {
+      process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = value;
+
+      let caught: unknown;
+      try {
+        await startServer();
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(Error);
+      const message = (caught as Error).message;
+      expect(message).toBe(
+        'PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP must be "0" or "1" when set',
+      );
+      if (value.length > 0) expect(message).not.toContain(value);
+      expect(loadConfigMock).not.toHaveBeenCalled();
+      expect(reconcileBuiltInAgentsOnStartupMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({

@@ -129,6 +129,7 @@ export function isForbiddenConfigEnvKey(key: string): boolean {
   return key === "PAPERCLIP_API_KEY";
 }
 const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
+  "../skills",
   "../../skills",
   "../../../../../skills",
 ];
