@@ -111,7 +111,7 @@ const {
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   };
   const routineServiceFactoryMock = vi.fn(() => routineServiceMock);
-  const reconcileBuiltInAgentsOnStartupMock = vi.fn(async () => ({
+  const reconcileBuiltInAgentsOnStartupMock = vi.fn(async (_db?: unknown) => ({
     scanned: 0,
     reconciled: 0,
     unknown: 0,
@@ -527,24 +527,32 @@ describe("startServer feedback export wiring", () => {
 
   it("preserves a four-company seven-agent existing-data fixture across startup and restart when disabled", async () => {
     process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = "0";
-    const fixture = buildExistingDataPreservationFixture();
-    const before = structuredClone(fixture);
-    reconcileBuiltInAgentsOnStartupMock.mockImplementation(async () => {
-      fixture.agents[6]!.metadata = {
+    const persistedState = buildExistingDataPreservationFixture();
+    const fixtureDb = {
+      persistedState,
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({ where: vi.fn(async () => []) })),
+      })),
+    };
+    createDbMock.mockReturnValue(fixtureDb as never);
+    const before = structuredClone(fixtureDb.persistedState);
+    reconcileBuiltInAgentsOnStartupMock.mockImplementation(async (candidateDb?: unknown) => {
+      const state = (candidateDb as typeof fixtureDb).persistedState;
+      state.agents[6]!.metadata = {
         paperclipBuiltInAgent: { key: "reflection-coach" },
         custom: "overwritten",
       };
-      fixture.configRevisions.push({
+      state.configRevisions.push({
         id: "revision-startup",
-        agentId: fixture.agents[6]!.id,
+        agentId: state.agents[6]!.id,
         revision: 8,
       });
-      fixture.activities.push({
+      state.activities.push({
         id: "activity-startup",
-        companyId: fixture.companies[2]!.id,
+        companyId: state.companies[2]!.id,
         action: "built_in_agent.reconciled",
       });
-      fixture.managedResources[0]!.stockStatus = "stock_current";
+      state.managedResources[0]!.stockStatus = "stock_current";
       return {
         scanned: 1,
         reconciled: 1,
@@ -560,8 +568,9 @@ describe("startServer feedback export wiring", () => {
     await startServer();
     await startServer();
 
+    expect(createDbMock).toHaveBeenCalledTimes(2);
     expect(reconcileBuiltInAgentsOnStartupMock).not.toHaveBeenCalled();
-    expect(fixture).toEqual(before);
+    expect(fixtureDb.persistedState).toEqual(before);
   });
 
   it("keeps built-in agent startup reconciliation enabled when explicitly set to one", async () => {
