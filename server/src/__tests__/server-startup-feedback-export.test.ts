@@ -8,6 +8,7 @@ const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL
 const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
+const ORIGINAL_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP;
 
 const {
   createAppMock,
@@ -32,6 +33,7 @@ const {
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
   routineServiceMock,
+  reconcileBuiltInAgentsOnStartupMock,
 } = vi.hoisted(() => {
   const createAppMock = vi.fn(async () => ((_: unknown, __: unknown) => {}) as never);
   const createBetterAuthInstanceMock = vi.fn(() => ({}));
@@ -109,6 +111,16 @@ const {
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
   };
   const routineServiceFactoryMock = vi.fn(() => routineServiceMock);
+  const reconcileBuiltInAgentsOnStartupMock = vi.fn(async () => ({
+    scanned: 0,
+    reconciled: 0,
+    unknown: 0,
+    duplicates: 0,
+    autoEnsured: 0,
+    pendingApprovals: 0,
+    defaultGrantsEnsured: 0,
+    companyFailures: 0,
+  }));
   const feedbackExportServiceMock = {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
@@ -147,6 +159,7 @@ const {
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
     routineServiceMock,
+    reconcileBuiltInAgentsOnStartupMock,
   };
 });
 
@@ -293,12 +306,7 @@ vi.mock("../services/index.js", () => ({
     failed: 0,
     seededAgentIds: [],
   })),
-  reconcileBuiltInAgentsOnStartup: vi.fn(async () => ({
-    scanned: 0,
-    reconciled: 0,
-    unknown: 0,
-    duplicates: 0,
-  })),
+  reconcileBuiltInAgentsOnStartup: reconcileBuiltInAgentsOnStartupMock,
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
@@ -350,9 +358,48 @@ vi.mock("../auth/better-auth.js", () => ({
 
 import { startServer } from "../index.ts";
 
+function buildExistingDataPreservationFixture() {
+  const companies = Array.from({ length: 4 }, (_, index) => ({
+    id: `company-${index + 1}`,
+    status: "active",
+  }));
+  const agents = Array.from({ length: 7 }, (_, index) => ({
+    id: `agent-${index + 1}`,
+    companyId: companies[index % companies.length]!.id,
+    status: "paused",
+    adapterType: index < 4 ? "openclaw_gateway" : "hermes_local",
+    adapterConfig: index < 4
+      ? { url: `http://127.0.0.1:${18790 + index}`, timeoutSec: 7200 }
+      : { profile: `profile-${index + 1}`, timeoutSec: 7200, sessionPersistence: true },
+    metadata: index === 6
+      ? { paperclipBuiltInAgent: { key: "reflection-coach" }, custom: "preserve" }
+      : { custom: `agent-${index + 1}` },
+  }));
+  return {
+    companies,
+    agents,
+    issues: [{ id: "issue-1", companyId: companies[0]!.id, status: "todo" }],
+    runs: [{ id: "run-1", agentId: agents[0]!.id, status: "failed" }],
+    grants: [{ id: "grant-1", companyId: companies[0]!.id, permission: "tasks:assign" }],
+    approvals: [{ id: "approval-1", companyId: companies[1]!.id, status: "pending" }],
+    activities: [{ id: "activity-1", companyId: companies[2]!.id, action: "agent.paused" }],
+    managedResources: [{ id: "resource-1", agentId: agents[6]!.id, stockStatus: "customized" }],
+    configRevisions: [{ id: "revision-1", agentId: agents[6]!.id, revision: 7 }],
+  };
+}
+
+afterEach(() => {
+  if (ORIGINAL_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP === undefined) {
+    delete process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP;
+  } else {
+    process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = ORIGINAL_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP;
+  }
+});
+
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP;
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "0123456789abcdef0123456789abcdef";
     loadConfigMock.mockReturnValue(buildTestConfig());
@@ -458,6 +505,7 @@ describe("startServer feedback export wiring", () => {
     const started = await startServer();
 
     expect(started.server).toBe(fakeServer);
+    expect(reconcileBuiltInAgentsOnStartupMock).toHaveBeenCalledTimes(1);
     expect(feedbackServiceFactoryMock).toHaveBeenCalledTimes(1);
     expect(createAppMock).toHaveBeenCalledTimes(1);
     expect(createAppMock.mock.calls[0]?.[1]).toMatchObject({
@@ -466,6 +514,86 @@ describe("startServer feedback export wiring", () => {
       serverPort: 3210,
     });
   });
+
+  it("skips built-in agent startup reconciliation when explicitly disabled", async () => {
+    process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = "0";
+
+    const started = await startServer();
+
+    expect(started.server).toBe(fakeServer);
+    expect(reconcileBuiltInAgentsOnStartupMock).not.toHaveBeenCalled();
+    expect(createAppMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves a four-company seven-agent existing-data fixture across startup and restart when disabled", async () => {
+    process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = "0";
+    const fixture = buildExistingDataPreservationFixture();
+    const before = structuredClone(fixture);
+    reconcileBuiltInAgentsOnStartupMock.mockImplementation(async () => {
+      fixture.agents[6]!.metadata = {
+        paperclipBuiltInAgent: { key: "reflection-coach" },
+        custom: "overwritten",
+      };
+      fixture.configRevisions.push({
+        id: "revision-startup",
+        agentId: fixture.agents[6]!.id,
+        revision: 8,
+      });
+      fixture.activities.push({
+        id: "activity-startup",
+        companyId: fixture.companies[2]!.id,
+        action: "built_in_agent.reconciled",
+      });
+      fixture.managedResources[0]!.stockStatus = "stock_current";
+      return {
+        scanned: 1,
+        reconciled: 1,
+        unknown: 0,
+        duplicates: 0,
+        autoEnsured: 0,
+        pendingApprovals: 0,
+        defaultGrantsEnsured: 0,
+        companyFailures: 0,
+      };
+    });
+
+    await startServer();
+    await startServer();
+
+    expect(reconcileBuiltInAgentsOnStartupMock).not.toHaveBeenCalled();
+    expect(fixture).toEqual(before);
+  });
+
+  it("keeps built-in agent startup reconciliation enabled when explicitly set to one", async () => {
+    process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = "1";
+
+    await startServer();
+
+    expect(reconcileBuiltInAgentsOnStartupMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["", "true", "2", "secret-value"])(
+    "rejects invalid PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP=%j without exposing its value",
+    async (value) => {
+      process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = value;
+
+      let caught: unknown;
+      try {
+        await startServer();
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(Error);
+      const message = (caught as Error).message;
+      expect(message).toBe(
+        'PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP must be "0" or "1" when set',
+      );
+      if (value.length > 0) expect(message).not.toContain(value);
+      expect(loadConfigMock).not.toHaveBeenCalled();
+      expect(reconcileBuiltInAgentsOnStartupMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps routine ticks and setup cleanup active when heartbeat scheduling is suppressed", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({

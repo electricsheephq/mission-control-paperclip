@@ -1,0 +1,122 @@
+name: evaOS Runtime Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Commit SHA, branch, or tag to build
+        required: true
+        type: string
+        default: master
+      version:
+        description: Internal evaOS Paperclip runtime version
+        required: true
+        type: string
+      dry_run:
+        description: Build and upload the workflow artifact without creating a GitHub Release
+        required: true
+        type: boolean
+        default: true
+      prerelease:
+        description: Mark the GitHub Release as a prerelease
+        required: true
+        type: boolean
+        default: true
+
+concurrency:
+  group: evaos-runtime-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+
+    steps:
+      - name: Validate release inputs
+        env:
+          EVAOS_ARTIFACT_VERSION: ${{ inputs.version }}
+          EVAOS_ARTIFACT_SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          case "$EVAOS_ARTIFACT_VERSION" in
+            ""|*[!0-9A-Za-z._-]*)
+              echo "Invalid evaOS artifact version" >&2
+              exit 2
+              ;;
+          esac
+          case "$EVAOS_ARTIFACT_SOURCE_REF" in
+            ""|*[!0-9A-Za-z._/@+-]*)
+              echo "Invalid evaOS artifact source ref" >&2
+              exit 2
+              ;;
+          esac
+
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.source_ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Validate release package manifest
+        run: node ./scripts/release-package-map.mjs check
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Build evaOS runtime artifact
+        env:
+          EVAOS_ARTIFACT_VERSION: ${{ inputs.version }}
+          EVAOS_ARTIFACT_SOURCE_REF: ${{ inputs.source_ref }}
+        run: |
+          mkdir -p dist/evaos-artifacts
+          ./scripts/build-evaos-runtime-artifact.sh \
+            --version "$EVAOS_ARTIFACT_VERSION" \
+            --source-ref "$EVAOS_ARTIFACT_SOURCE_REF" \
+            --out-dir dist/evaos-artifacts
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: evaos-paperclip-runtime-${{ inputs.version }}
+          path: |
+            dist/evaos-artifacts/*.tgz
+            dist/evaos-artifacts/*.sha256
+            dist/evaos-artifacts/manifest.json
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: ${{ ! inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVAOS_ARTIFACT_VERSION: ${{ inputs.version }}
+          EVAOS_ARTIFACT_SOURCE_REF: ${{ inputs.source_ref }}
+          EVAOS_ARTIFACT_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          tag="evaos-paperclip/v${EVAOS_ARTIFACT_VERSION}"
+          args=(
+            release create "$tag"
+            dist/evaos-artifacts/*.tgz
+            dist/evaos-artifacts/*.sha256
+            dist/evaos-artifacts/manifest.json
+            --title "evaOS Paperclip Runtime ${EVAOS_ARTIFACT_VERSION}"
+            --target "$(git rev-parse HEAD)"
+            --notes "Internal evaOS/RVM Paperclip runtime artifact built from ${EVAOS_ARTIFACT_SOURCE_REF}."
+          )
+          if [[ "$EVAOS_ARTIFACT_PRERELEASE" == "true" ]]; then
+            args+=(--prerelease)
+          fi
+          gh "${args[@]}"
