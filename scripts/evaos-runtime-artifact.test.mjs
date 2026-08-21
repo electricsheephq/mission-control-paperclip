@@ -189,7 +189,7 @@ test("linkCliRuntimeExternals rejects ambiguous deployed dependency versions", a
 test("linkCliRuntimeExternals deduplicates pnpm aliases to one physical package", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-evaos-links-aliases-"));
   const packageRoot = path.join(root, "paperclipai");
-  const target = path.join(root, "runtime-target");
+  const target = path.join(packageRoot, "node_modules", ".pnpm", "runtime-target");
   try {
     await mkdir(target, { recursive: true });
     for (const name of ["runtime@1.0.0", "runtime@alias"]) {
@@ -206,20 +206,83 @@ test("linkCliRuntimeExternals deduplicates pnpm aliases to one physical package"
 test("linkCliRuntimeExternals prefers the version reachable from a direct dependency", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-evaos-links-direct-dependency-"));
   const packageRoot = path.join(root, "paperclipai");
-  const sharedRoot = path.join(packageRoot, "node_modules", "@paperclipai", "shared");
-  const expected = path.join(root, "zod-4");
+  const sharedStoreRoot = path.join(
+    packageRoot,
+    "node_modules",
+    ".pnpm",
+    "@paperclipai+shared@file+packages+shared",
+    "node_modules",
+  );
+  const sharedRoot = path.join(sharedStoreRoot, "@paperclipai", "shared");
+  const unrelated = path.join(packageRoot, "node_modules", ".pnpm", "zod@3", "node_modules", "zod");
+  const expected = path.join(packageRoot, "node_modules", ".pnpm", "zod@4.4.3", "node_modules", "zod");
   try {
-    await mkdir(path.join(sharedRoot, "node_modules"), { recursive: true });
+    await mkdir(sharedRoot, { recursive: true });
     await mkdir(expected, { recursive: true });
-    await mkdir(path.join(packageRoot, "node_modules", ".pnpm", "zod@3", "node_modules", "zod"), { recursive: true });
+    await mkdir(unrelated, { recursive: true });
     await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ dependencies: { "@paperclipai/shared": "workspace:*" } }));
-    await symlink(expected, path.join(sharedRoot, "node_modules", "zod"));
+    await writeFile(path.join(sharedRoot, "package.json"), JSON.stringify({ name: "@paperclipai/shared", dependencies: { zod: "^4.4.3" } }));
+    await symlink(expected, path.join(sharedStoreRoot, "zod"));
+    await mkdir(path.join(packageRoot, "node_modules", "@paperclipai"), { recursive: true });
+    await symlink(sharedRoot, path.join(packageRoot, "node_modules", "@paperclipai", "shared"));
+    await symlink(unrelated, path.join(packageRoot, "node_modules", "zod"));
+    await writeFile(path.join(expected, "package.json"), JSON.stringify({ name: "zod", version: "4.4.3" }));
 
     assert.deepEqual(await linkCliRuntimeExternals(packageRoot, ["zod"]), ["zod"]);
     assert.equal(
       await realpath(path.join(packageRoot, "node_modules", "zod")),
       await realpath(expected),
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("linkCliRuntimeExternals rejects declared dependencies outside the artifact tree", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-evaos-links-outside-"));
+  const packageRoot = path.join(root, "paperclipai");
+  const sharedStoreRoot = path.join(packageRoot, "node_modules", ".pnpm", "shared", "node_modules");
+  const sharedRoot = path.join(sharedStoreRoot, "@paperclipai", "shared");
+  const outside = path.join(root, "outside-runtime");
+  try {
+    await mkdir(sharedRoot, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await writeFile(path.join(packageRoot, "package.json"), "{}");
+    await writeFile(path.join(sharedRoot, "package.json"), JSON.stringify({ dependencies: { runtime: "1" } }));
+    await writeFile(path.join(outside, "package.json"), JSON.stringify({ name: "runtime" }));
+    await symlink(outside, path.join(sharedStoreRoot, "runtime"));
+    await mkdir(path.join(packageRoot, "node_modules", "@paperclipai"), { recursive: true });
+    await symlink(sharedRoot, path.join(packageRoot, "node_modules", "@paperclipai", "shared"));
+    await assert.rejects(linkCliRuntimeExternals(packageRoot, ["runtime"]), /outside artifact tree/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("linkCliRuntimeExternals rejects a direct dependency outside the artifact tree", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-evaos-links-direct-outside-"));
+  const packageRoot = path.join(root, "paperclipai");
+  const outside = path.join(root, "outside-runtime");
+  try {
+    await mkdir(path.join(packageRoot, "node_modules"), { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await symlink(outside, path.join(packageRoot, "node_modules", "runtime"));
+    await assert.rejects(linkCliRuntimeExternals(packageRoot, ["runtime"]), /outside artifact tree/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("linkCliRuntimeExternals rejects a pnpm dependency outside the artifact tree", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-evaos-links-pnpm-outside-"));
+  const packageRoot = path.join(root, "paperclipai");
+  const candidateParent = path.join(packageRoot, "node_modules", ".pnpm", "runtime@1", "node_modules");
+  const outside = path.join(root, "outside-runtime");
+  try {
+    await mkdir(candidateParent, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await symlink(outside, path.join(candidateParent, "runtime"));
+    await assert.rejects(linkCliRuntimeExternals(packageRoot, ["runtime"]), /outside artifact tree/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
