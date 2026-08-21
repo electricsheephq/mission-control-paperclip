@@ -236,10 +236,6 @@ function nodeModulePackagePath(nodeModulesPath, packageName) {
 async function findDeployedDependencyRoot(packageRoot, packageName) {
   const nodeModulesPath = path.join(packageRoot, "node_modules");
   const directPath = nodeModulePackagePath(nodeModulesPath, packageName);
-  if (await pathExists(directPath)) {
-    return directPath;
-  }
-
   const packageJsons = [
     path.join(packageRoot, "package.json"),
     ...(await listScopedPaperclipPackageJsons(packageRoot)),
@@ -270,6 +266,10 @@ async function findDeployedDependencyRoot(packageRoot, packageName) {
     );
   }
   if (declaredCandidates.length === 1) return declaredCandidates[0];
+
+  if (await pathExists(directPath)) {
+    return directPath;
+  }
 
   const pnpmStorePath = path.join(nodeModulesPath, ".pnpm");
   const entries = await readdir(pnpmStorePath, { withFileTypes: true }).catch((err) => {
@@ -311,14 +311,15 @@ export async function linkCliRuntimeExternals(packageRoot, externals) {
     if (!packageName || packageName.startsWith("node:")) continue;
 
     const directPath = nodeModulePackagePath(nodeModulesPath, packageName);
-    if (await pathExists(directPath, { followSymlink: false })) {
-      continue;
-    }
-
     const targetPath = await findDeployedDependencyRoot(packageRoot, packageName);
     await mkdir(path.dirname(directPath), { recursive: true });
     const linkParent = await realpath(path.dirname(directPath));
     const target = await realpath(targetPath);
+    if (await pathExists(directPath, { followSymlink: false })) {
+      const currentTarget = await realpath(directPath).catch(() => "");
+      if (currentTarget === target) continue;
+      await rm(directPath, { recursive: true, force: true });
+    }
     await symlink(path.relative(linkParent, target), directPath);
     linked.push(packageName);
   }

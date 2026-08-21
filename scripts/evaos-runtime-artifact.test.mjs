@@ -214,16 +214,18 @@ test("linkCliRuntimeExternals prefers the version reachable from a direct depend
     "node_modules",
   );
   const sharedRoot = path.join(sharedStoreRoot, "@paperclipai", "shared");
+  const unrelated = path.join(packageRoot, "node_modules", ".pnpm", "zod@3", "node_modules", "zod");
   const expected = path.join(root, "zod-4");
   try {
     await mkdir(sharedRoot, { recursive: true });
     await mkdir(expected, { recursive: true });
-    await mkdir(path.join(packageRoot, "node_modules", ".pnpm", "zod@3", "node_modules", "zod"), { recursive: true });
+    await mkdir(unrelated, { recursive: true });
     await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ dependencies: { "@paperclipai/shared": "workspace:*" } }));
     await writeFile(path.join(sharedRoot, "package.json"), JSON.stringify({ name: "@paperclipai/shared", dependencies: { zod: "^4.4.3" } }));
     await symlink(expected, path.join(sharedStoreRoot, "zod"));
     await mkdir(path.join(packageRoot, "node_modules", "@paperclipai"), { recursive: true });
     await symlink(sharedRoot, path.join(packageRoot, "node_modules", "@paperclipai", "shared"));
+    await symlink(unrelated, path.join(packageRoot, "node_modules", "zod"));
     await writeFile(path.join(expected, "package.json"), JSON.stringify({ name: "zod", version: "4.4.3" }));
 
     assert.deepEqual(await linkCliRuntimeExternals(packageRoot, ["zod"]), ["zod"]);
