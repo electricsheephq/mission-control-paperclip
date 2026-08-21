@@ -72,9 +72,12 @@ test("artifactFileName uses the evaOS runtime naming convention", () => {
   );
 });
 
-test("build script hydrates native links and normalizes tar ownership", async () => {
+test("build script targets Linux x64 externals, restores source skills, and normalizes tar ownership", async () => {
   const script = await readFile(new URL("./build-evaos-runtime-artifact.sh", import.meta.url), "utf8");
   assert.match(script, /hydrate-embedded-postgres-native "\$PACKAGE_ROOT"/);
+  assert.match(script, /embeddedPostgresTarget = "@embedded-postgres\/linux-x64"/);
+  assert.match(script, /restore_skill_dirs/);
+  assert.match(script, /no Linux x64 CLI runtime externals resolved/);
   assert.match(script, /tar --owner=0 --group=0 --numeric-owner/);
 });
 
@@ -123,6 +126,39 @@ test("linkCliRuntimeExternals links bundled CLI externals from deployed pnpm tre
     assert.equal(
       path.resolve(path.dirname(linkPath), await readlink(linkPath)),
       zodRoot,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("linkCliRuntimeExternals fails descriptively when the deployed pnpm tree is absent", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-evaos-links-missing-"));
+  const packageRoot = path.join(root, "paperclipai");
+  try {
+    await mkdir(path.join(packageRoot, "node_modules"), { recursive: true });
+    await assert.rejects(
+      linkCliRuntimeExternals(packageRoot, ["missing-runtime"]),
+      /deployed dependency not found for CLI external: missing-runtime/,
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("linkCliRuntimeExternals rejects ambiguous deployed dependency versions", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-evaos-links-ambiguous-"));
+  const packageRoot = path.join(root, "paperclipai");
+  try {
+    for (const version of ["1.0.0", "2.0.0"]) {
+      await mkdir(
+        path.join(packageRoot, "node_modules", ".pnpm", `runtime@${version}`, "node_modules", "runtime"),
+        { recursive: true },
+      );
+    }
+    await assert.rejects(
+      linkCliRuntimeExternals(packageRoot, ["runtime"]),
+      /ambiguous deployed dependency for CLI external runtime/,
     );
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -9,6 +9,11 @@ SKIP_BUILD=0
 SKIP_SMOKE=0
 KEEP_STAGE=0
 BUILD_EXECUTED=0
+SKILL_PACKAGE_DIRS=(
+  "server"
+  "packages/adapters/claude-local"
+  "packages/adapters/codex-local"
+)
 
 usage() {
   cat <<'USAGE'
@@ -55,19 +60,31 @@ SHA_PATH="$ARTIFACT_PATH.sha256"
 MANIFEST_PATH="$OUT_DIR/manifest.json"
 STAGE_PARENT="$(mktemp -d "$OUT_DIR/.paperclip-evaos-runtime.XXXXXX")"
 PACKAGE_ROOT="$STAGE_PARENT/paperclipai"
+SKILLS_BACKUP_ROOT="$STAGE_PARENT/original-skills"
+
+restore_skill_dirs() {
+  local pkg_dir
+  for pkg_dir in "${SKILL_PACKAGE_DIRS[@]}"; do
+    if [[ ! -f "$SKILLS_BACKUP_ROOT/$pkg_dir/.skills-replaced" ]]; then
+      continue
+    fi
+    rm -rf "$REPO_ROOT/$pkg_dir/skills"
+    if [[ -f "$SKILLS_BACKUP_ROOT/$pkg_dir/.skills-existed" ]]; then
+      cp -a "$SKILLS_BACKUP_ROOT/$pkg_dir/skills" "$REPO_ROOT/$pkg_dir/skills"
+    fi
+  done
+}
 
 cleanup() {
+  if [[ "$BUILD_EXECUTED" == "1" ]]; then
+    restore_skill_dirs
+    rm -rf "$REPO_ROOT/server/ui-dist"
+  fi
+
   if [[ "$KEEP_STAGE" != "1" ]]; then
     rm -rf "$STAGE_PARENT"
   else
     printf 'kept artifact stage at %s\n' "$STAGE_PARENT"
-  fi
-
-  if [[ "$BUILD_EXECUTED" == "1" ]]; then
-    rm -rf "$REPO_ROOT/server/ui-dist"
-    for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
-      rm -rf "$REPO_ROOT/$pkg_dir/skills"
-    done
   fi
 }
 trap cleanup EXIT
@@ -80,7 +97,13 @@ if [[ "$SKIP_BUILD" != "1" ]]; then
   pnpm build
   node "$REPO_ROOT/scripts/build-standalone-public-packages.mjs"
   bash "$REPO_ROOT/scripts/prepare-server-ui-dist.sh"
-  for pkg_dir in server packages/adapters/claude-local packages/adapters/codex-local; do
+  for pkg_dir in "${SKILL_PACKAGE_DIRS[@]}"; do
+    mkdir -p "$SKILLS_BACKUP_ROOT/$pkg_dir"
+    if [[ -e "$REPO_ROOT/$pkg_dir/skills" || -L "$REPO_ROOT/$pkg_dir/skills" ]]; then
+      cp -a "$REPO_ROOT/$pkg_dir/skills" "$SKILLS_BACKUP_ROOT/$pkg_dir/skills"
+      touch "$SKILLS_BACKUP_ROOT/$pkg_dir/.skills-existed"
+    fi
+    touch "$SKILLS_BACKUP_ROOT/$pkg_dir/.skills-replaced"
     rm -rf "$REPO_ROOT/$pkg_dir/skills"
     cp -R "$REPO_ROOT/skills" "$REPO_ROOT/$pkg_dir/skills"
   done
@@ -89,19 +112,26 @@ fi
 rm -rf "$PACKAGE_ROOT"
 pnpm --filter paperclipai deploy --prod "$PACKAGE_ROOT"
 node "$REPO_ROOT/scripts/evaos-runtime-artifact.mjs" patch-versions "$PACKAGE_ROOT" "$VERSION"
-CLI_RUNTIME_EXTERNALS=()
-while IFS= read -r external; do
-  CLI_RUNTIME_EXTERNALS+=("$external")
-done < <(node --input-type=module <<'NODE'
+CLI_RUNTIME_EXTERNALS_RAW="$(node --input-type=module <<'NODE'
 import config from "./cli/esbuild.config.mjs";
+const embeddedPostgresTarget = "@embedded-postgres/linux-x64";
 for (const external of config.external ?? []) {
+  if (external.startsWith("@embedded-postgres/") && external !== embeddedPostgresTarget) {
+    continue;
+  }
   console.log(external);
 }
 NODE
-)
-if ((${#CLI_RUNTIME_EXTERNALS[@]} > 0)); then
-  node "$REPO_ROOT/scripts/evaos-runtime-artifact.mjs" link-cli-externals "$PACKAGE_ROOT" "${CLI_RUNTIME_EXTERNALS[@]}"
+)"
+CLI_RUNTIME_EXTERNALS=()
+while IFS= read -r external; do
+  [[ -n "$external" ]] && CLI_RUNTIME_EXTERNALS+=("$external")
+done <<<"$CLI_RUNTIME_EXTERNALS_RAW"
+if ((${#CLI_RUNTIME_EXTERNALS[@]} == 0)); then
+  echo "ERROR: no Linux x64 CLI runtime externals resolved from cli/esbuild.config.mjs" >&2
+  exit 1
 fi
+node "$REPO_ROOT/scripts/evaos-runtime-artifact.mjs" link-cli-externals "$PACKAGE_ROOT" "${CLI_RUNTIME_EXTERNALS[@]}"
 node "$REPO_ROOT/scripts/evaos-runtime-artifact.mjs" hydrate-embedded-postgres-native "$PACKAGE_ROOT" >/dev/null
 
 if [[ "$SKIP_SMOKE" != "1" ]]; then

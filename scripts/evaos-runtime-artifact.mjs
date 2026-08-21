@@ -243,7 +243,11 @@ async function findDeployedDependencyRoot(packageRoot, packageName) {
   }
 
   const pnpmStorePath = path.join(nodeModulesPath, ".pnpm");
-  const entries = await readdir(pnpmStorePath, { withFileTypes: true });
+  const entries = await readdir(pnpmStorePath, { withFileTypes: true }).catch((err) => {
+    if (err?.code === "ENOENT") return [];
+    throw err;
+  });
+  const candidates = [];
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (!entry.isDirectory()) continue;
     const candidate = nodeModulePackagePath(
@@ -251,9 +255,15 @@ async function findDeployedDependencyRoot(packageRoot, packageName) {
       packageName,
     );
     if (await pathExists(candidate)) {
-      return candidate;
+      candidates.push(candidate);
     }
   }
+  if (candidates.length > 1) {
+    throw new Error(
+      `ambiguous deployed dependency for CLI external ${packageName}: ${candidates.join(", ")}`,
+    );
+  }
+  if (candidates.length === 1) return candidates[0];
 
   throw new Error(`deployed dependency not found for CLI external: ${packageName}`);
 }
