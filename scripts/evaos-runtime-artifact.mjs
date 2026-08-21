@@ -247,7 +247,7 @@ async function findDeployedDependencyRoot(packageRoot, packageName) {
     if (err?.code === "ENOENT") return [];
     throw err;
   });
-  const candidates = [];
+  const candidatesByTarget = new Map();
   for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (!entry.isDirectory()) continue;
     const candidate = nodeModulePackagePath(
@@ -255,9 +255,11 @@ async function findDeployedDependencyRoot(packageRoot, packageName) {
       packageName,
     );
     if (await pathExists(candidate)) {
-      candidates.push(candidate);
+      const target = await realpath(candidate);
+      if (!candidatesByTarget.has(target)) candidatesByTarget.set(target, candidate);
     }
   }
+  const candidates = [...candidatesByTarget.values()];
   if (candidates.length > 1) {
     throw new Error(
       `ambiguous deployed dependency for CLI external ${packageName}: ${candidates.join(", ")}`,

@@ -66,6 +66,12 @@ fi
 
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
+case "$OUT_DIR/" in
+  "$REPO_ROOT/server/ui-dist/"*)
+    echo "ERROR: output directory must not be server/ui-dist or a descendant" >&2
+    exit 1
+    ;;
+esac
 ARTIFACT_NAME="$(node "$REPO_ROOT/scripts/evaos-runtime-artifact.mjs" artifact-name --version "$VERSION" --out-dir "$OUT_DIR" --source-ref "$SOURCE_REF")"
 ARTIFACT_PATH="$OUT_DIR/$ARTIFACT_NAME"
 SHA_PATH="$ARTIFACT_PATH.sha256"
@@ -132,6 +138,7 @@ done
 
 rm -rf "$PACKAGE_ROOT"
 pnpm --filter paperclipai deploy --prod "$PACKAGE_ROOT"
+cp -R "$REPO_ROOT/skills" "$PACKAGE_ROOT/skills"
 node "$REPO_ROOT/scripts/evaos-runtime-artifact.mjs" patch-versions "$PACKAGE_ROOT" "$VERSION"
 CLI_RUNTIME_EXTERNALS_RAW="$(node --input-type=module <<'NODE'
 import config from "./cli/esbuild.config.mjs";

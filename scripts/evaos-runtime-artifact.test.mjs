@@ -82,6 +82,8 @@ test("build script targets Linux x64 externals, restores source skills, and norm
   assert.match(script, /source ref does not match the checked-out commit/);
   assert.match(script, /refusing to build an evaOS runtime artifact from a dirty checkout/);
   assert.match(script, /OUT_DIR="\$\(cd "\$OUT_DIR" && pwd -P\)"/);
+  assert.match(script, /output directory must not be server\/ui-dist or a descendant/);
+  assert.match(script, /cp -R "\$REPO_ROOT\/skills" "\$PACKAGE_ROOT\/skills"/);
   assert.match(script, /prepare-server-ui-dist\.sh/);
   assert.ok(script.indexOf("prepare-server-ui-dist.sh") > script.indexOf('if [[ "$SKIP_BUILD" != "1" ]]'));
 });
@@ -171,6 +173,23 @@ test("linkCliRuntimeExternals rejects ambiguous deployed dependency versions", a
       linkCliRuntimeExternals(packageRoot, ["runtime"]),
       /ambiguous deployed dependency for CLI external runtime/,
     );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("linkCliRuntimeExternals deduplicates pnpm aliases to one physical package", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-evaos-links-aliases-"));
+  const packageRoot = path.join(root, "paperclipai");
+  const target = path.join(root, "runtime-target");
+  try {
+    await mkdir(target, { recursive: true });
+    for (const name of ["runtime@1.0.0", "runtime@alias"]) {
+      const parent = path.join(packageRoot, "node_modules", ".pnpm", name, "node_modules");
+      await mkdir(parent, { recursive: true });
+      await symlink(target, path.join(parent, "runtime"));
+    }
+    assert.deepEqual(await linkCliRuntimeExternals(packageRoot, ["runtime"]), ["runtime"]);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
