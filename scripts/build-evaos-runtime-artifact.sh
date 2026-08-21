@@ -64,14 +64,26 @@ if [[ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)" ]]; t
   exit 1
 fi
 
-mkdir -p "$OUT_DIR"
-OUT_DIR="$(cd "$OUT_DIR" && pwd -P)"
+OUT_DIR="$(node -e '
+  const fs = require("node:fs");
+  const path = require("node:path");
+  let candidate = path.resolve(process.argv[1]);
+  const suffix = [];
+  while (!fs.existsSync(candidate)) {
+    const parent = path.dirname(candidate);
+    if (parent === candidate) break;
+    suffix.unshift(path.basename(candidate));
+    candidate = parent;
+  }
+  process.stdout.write(path.join(fs.realpathSync(candidate), ...suffix));
+' "$OUT_DIR")"
 case "$OUT_DIR/" in
   "$REPO_ROOT/server/ui-dist/"*)
     echo "ERROR: output directory must not be server/ui-dist or a descendant" >&2
     exit 1
     ;;
 esac
+mkdir -p "$OUT_DIR"
 ARTIFACT_NAME="$(node "$REPO_ROOT/scripts/evaos-runtime-artifact.mjs" artifact-name --version "$VERSION" --out-dir "$OUT_DIR" --source-ref "$SOURCE_REF")"
 ARTIFACT_PATH="$OUT_DIR/$ARTIFACT_NAME"
 SHA_PATH="$ARTIFACT_PATH.sha256"
