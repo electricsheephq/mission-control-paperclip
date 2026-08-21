@@ -250,6 +250,10 @@ async function findDeployedDependencyRoot(packageRoot, packageName) {
         .resolve(`${packageName}/package.json`);
       const candidate = path.dirname(resolvedPackageJson);
       const target = await realpath(candidate);
+      const installRoot = await realpath(packageRoot);
+      if (!isPathInside(target, installRoot)) {
+        throw new Error(`declared dependency for CLI external ${packageName} resolved outside artifact tree`);
+      }
       if (!declaredCandidatesByTarget.has(target)) {
         declaredCandidatesByTarget.set(target, candidate);
       }
