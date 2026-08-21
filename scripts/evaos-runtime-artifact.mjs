@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import {
   cp,
   lstat,
@@ -239,33 +240,36 @@ async function findDeployedDependencyRoot(packageRoot, packageName) {
     return directPath;
   }
 
-  const packageJsonText = await readFile(path.join(packageRoot, "package.json"), "utf8").catch((err) => {
-    if (err?.code === "ENOENT") return "{}";
-    throw err;
-  });
-  const packageJson = JSON.parse(packageJsonText);
-  const directDependencyNames = Object.keys(packageJson.dependencies ?? {}).sort();
-  const nestedCandidatesByTarget = new Map();
-  for (const dependencyName of directDependencyNames) {
-    const dependencyRoot = nodeModulePackagePath(nodeModulesPath, dependencyName);
-    const nestedCandidate = nodeModulePackagePath(
-      path.join(dependencyRoot, "node_modules"),
-      packageName,
-    );
-    if (await pathExists(nestedCandidate)) {
-      const target = await realpath(nestedCandidate);
-      if (!nestedCandidatesByTarget.has(target)) {
-        nestedCandidatesByTarget.set(target, nestedCandidate);
+  const packageJsons = [
+    path.join(packageRoot, "package.json"),
+    ...(await listScopedPaperclipPackageJsons(packageRoot)),
+  ];
+  const declaredCandidatesByTarget = new Map();
+  for (const packageJsonPath of packageJsons) {
+    if (!(await pathExists(packageJsonPath))) continue;
+    const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
+    if (!Object.hasOwn(packageJson.dependencies ?? {}, packageName)) continue;
+    try {
+      const resolvedPackageJson = createRequire(await realpath(packageJsonPath))
+        .resolve(`${packageName}/package.json`);
+      const candidate = path.dirname(resolvedPackageJson);
+      const target = await realpath(candidate);
+      if (!declaredCandidatesByTarget.has(target)) {
+        declaredCandidatesByTarget.set(target, candidate);
+      }
+    } catch (err) {
+      if (err?.code !== "MODULE_NOT_FOUND" && err?.code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") {
+        throw err;
       }
     }
   }
-  const nestedCandidates = [...nestedCandidatesByTarget.values()];
-  if (nestedCandidates.length > 1) {
+  const declaredCandidates = [...declaredCandidatesByTarget.values()];
+  if (declaredCandidates.length > 1) {
     throw new Error(
-      `ambiguous direct dependency for CLI external ${packageName}: ${nestedCandidates.join(", ")}`,
+      `ambiguous direct dependency for CLI external ${packageName}: ${declaredCandidates.join(", ")}`,
     );
   }
-  if (nestedCandidates.length === 1) return nestedCandidates[0];
+  if (declaredCandidates.length === 1) return declaredCandidates[0];
 
   const pnpmStorePath = path.join(nodeModulesPath, ".pnpm");
   const entries = await readdir(pnpmStorePath, { withFileTypes: true }).catch((err) => {
@@ -313,7 +317,9 @@ export async function linkCliRuntimeExternals(packageRoot, externals) {
 
     const targetPath = await findDeployedDependencyRoot(packageRoot, packageName);
     await mkdir(path.dirname(directPath), { recursive: true });
-    await symlink(path.relative(path.dirname(directPath), targetPath), directPath);
+    const linkParent = await realpath(path.dirname(directPath));
+    const target = await realpath(targetPath);
+    await symlink(path.relative(linkParent, target), directPath);
     linked.push(packageName);
   }
   return linked;
