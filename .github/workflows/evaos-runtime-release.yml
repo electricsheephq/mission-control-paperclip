@@ -37,6 +37,8 @@ jobs:
       - name: Validate release inputs
         env:
           EVAOS_ARTIFACT_VERSION: ${{ inputs.version }}
+          EVAOS_ARTIFACT_DRY_RUN: ${{ inputs.dry_run }}
+          EVAOS_RELEASE_REF: ${{ github.ref }}
         run: |
           case "$EVAOS_ARTIFACT_VERSION" in
             ""|*[!0-9A-Za-z._-]*)
@@ -44,6 +46,10 @@ jobs:
               exit 2
               ;;
           esac
+          if [[ "$EVAOS_ARTIFACT_DRY_RUN" != "true" && "$EVAOS_RELEASE_REF" != "refs/heads/master" ]]; then
+            echo "Published evaOS runtime releases must be dispatched from master" >&2
+            exit 2
+          fi
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
@@ -83,7 +89,6 @@ jobs:
           EVAOS_ARTIFACT_VERSION: ${{ inputs.version }}
           EVAOS_ARTIFACT_SOURCE_REF: ${{ steps.source.outputs.sha }}
         run: |
-          mkdir -p dist/evaos-artifacts
           ./scripts/build-evaos-runtime-artifact.sh \
             --version "$EVAOS_ARTIFACT_VERSION" \
             --source-ref "$EVAOS_ARTIFACT_SOURCE_REF" \

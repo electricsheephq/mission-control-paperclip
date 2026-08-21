@@ -1,7 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
 
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
@@ -9,6 +14,8 @@ const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUN
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
 const ORIGINAL_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP;
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const itWithEmbeddedPostgres = embeddedPostgresSupport.supported ? it : it.skip;
 
 const {
   createAppMock,
@@ -212,20 +219,20 @@ vi.mock("detect-port", () => ({
   default: detectPortMock,
 }));
 
-vi.mock("@paperclipai/db", () => ({
-  createDb: createDbMock,
-  ensurePostgresDatabase: vi.fn(),
-  getPostgresDataDirectory: vi.fn(),
-  inspectMigrations: vi.fn(async () => ({ status: "upToDate" })),
-  applyPendingMigrations: vi.fn(),
-  reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
-  formatDatabaseBackupResult: vi.fn(() => "ok"),
-  runDatabaseBackup: vi.fn(),
-  authUsers: {},
-  companies: {},
-  companyMemberships: {},
-  instanceUserRoles: {},
-}));
+vi.mock("@paperclipai/db", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@paperclipai/db")>();
+  return {
+    ...actual,
+    createDb: createDbMock,
+    ensurePostgresDatabase: vi.fn(),
+    getPostgresDataDirectory: vi.fn(),
+    inspectMigrations: vi.fn(async () => ({ status: "upToDate" })),
+    applyPendingMigrations: vi.fn(),
+    reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
+    formatDatabaseBackupResult: vi.fn(() => "ok"),
+    runDatabaseBackup: vi.fn(),
+  };
+});
 
 vi.mock("../app.js", () => ({
   createApp: createAppMock,
@@ -358,36 +365,6 @@ vi.mock("../auth/better-auth.js", () => ({
 
 import { startServer } from "../index.ts";
 
-function buildExistingDataPreservationFixture() {
-  const companies = Array.from({ length: 4 }, (_, index) => ({
-    id: `company-${index + 1}`,
-    status: "active",
-  }));
-  const agents = Array.from({ length: 7 }, (_, index) => ({
-    id: `agent-${index + 1}`,
-    companyId: companies[index % companies.length]!.id,
-    status: "paused",
-    adapterType: index < 4 ? "openclaw_gateway" : "hermes_local",
-    adapterConfig: index < 4
-      ? { url: `http://127.0.0.1:${18790 + index}`, timeoutSec: 7200 }
-      : { profile: `profile-${index + 1}`, timeoutSec: 7200, sessionPersistence: true },
-    metadata: index === 6
-      ? { paperclipBuiltInAgent: { key: "reflection-coach" }, custom: "preserve" }
-      : { custom: `agent-${index + 1}` },
-  }));
-  return {
-    companies,
-    agents,
-    issues: [{ id: "issue-1", companyId: companies[0]!.id, status: "todo" }],
-    runs: [{ id: "run-1", agentId: agents[0]!.id, status: "failed" }],
-    grants: [{ id: "grant-1", companyId: companies[0]!.id, permission: "tasks:assign" }],
-    approvals: [{ id: "approval-1", companyId: companies[1]!.id, status: "pending" }],
-    activities: [{ id: "activity-1", companyId: companies[2]!.id, action: "agent.paused" }],
-    managedResources: [{ id: "resource-1", agentId: agents[6]!.id, stockStatus: "customized" }],
-    configRevisions: [{ id: "revision-1", agentId: agents[6]!.id, revision: 7 }],
-  };
-}
-
 afterEach(() => {
   if (ORIGINAL_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP === undefined) {
     delete process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP;
@@ -399,6 +376,11 @@ afterEach(() => {
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    createDbMock.mockReturnValue({
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({ where: vi.fn(async () => []) })),
+      })),
+    } as never);
     delete process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP;
     process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "0123456789abcdef0123456789abcdef";
@@ -525,53 +507,69 @@ describe("startServer feedback export wiring", () => {
     expect(createAppMock).toHaveBeenCalledTimes(1);
   });
 
-  it("preserves a four-company seven-agent existing-data fixture across startup and restart when disabled", async () => {
+  itWithEmbeddedPostgres("preserves persisted four-company seven-agent state across startup and restart when disabled", async () => {
     process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = "0";
-    const persistedState = buildExistingDataPreservationFixture();
-    const fixtureDb = {
-      persistedState,
-      select: vi.fn(() => ({
-        from: vi.fn(() => ({ where: vi.fn(async () => []) })),
-      })),
-    };
-    createDbMock.mockReturnValue(fixtureDb as never);
-    const before = structuredClone(fixtureDb.persistedState);
-    reconcileBuiltInAgentsOnStartupMock.mockImplementation(async (candidateDb?: unknown) => {
-      const state = (candidateDb as typeof fixtureDb).persistedState;
-      state.agents[6]!.metadata = {
-        paperclipBuiltInAgent: { key: "reflection-coach" },
-        custom: "overwritten",
-      };
-      state.configRevisions.push({
-        id: "revision-startup",
-        agentId: state.agents[6]!.id,
-        revision: 8,
-      });
-      state.activities.push({
-        id: "activity-startup",
-        companyId: state.companies[2]!.id,
-        action: "built_in_agent.reconciled",
-      });
-      state.managedResources[0]!.stockStatus = "stock_current";
-      return {
-        scanned: 1,
-        reconciled: 1,
-        unknown: 0,
-        duplicates: 0,
-        autoEnsured: 0,
-        pendingApprovals: 0,
-        defaultGrantsEnsured: 0,
-        companyFailures: 0,
-      };
-    });
+    const actual = await vi.importActual<typeof import("@paperclipai/db")>("@paperclipai/db");
+    const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-startup-preservation-");
+    const db = actual.createDb(tempDb.connectionString);
+    const companyIds = Array.from({ length: 4 }, () => randomUUID());
+    const agentIds = Array.from({ length: 7 }, () => randomUUID());
+    const runId = randomUUID();
+    const trackedTables = [
+      actual.companies,
+      actual.agents,
+      actual.issues,
+      actual.heartbeatRuns,
+      actual.principalPermissionGrants,
+      actual.approvals,
+      actual.activityLog,
+      actual.builtInManagedResources,
+      actual.agentConfigRevisions,
+    ];
+    const snapshot = async () => Promise.all(trackedTables.map(async (table) => {
+      const rows = await (db as any).select().from(table);
+      return JSON.parse(JSON.stringify(rows)).sort((left: { id: string }, right: { id: string }) => left.id.localeCompare(right.id));
+    }));
 
-    await startServer();
-    await startServer();
+    try {
+      await db.insert(actual.companies).values(companyIds.map((id, index) => ({
+        id,
+        name: `Preserved company ${index + 1}`,
+        issuePrefix: `P${index + 1}`,
+      })));
+      await db.insert(actual.agents).values(agentIds.map((id, index) => ({
+        id,
+        companyId: companyIds[index % companyIds.length]!,
+        name: `Preserved agent ${index + 1}`,
+        status: "paused",
+        adapterType: index < 4 ? "openclaw_gateway" : "hermes_local",
+        adapterConfig: index < 4
+          ? { url: `http://127.0.0.1:${18790 + index}`, timeoutSec: 7200 }
+          : { profile: `profile-${index + 1}`, timeoutSec: 7200, persistSession: true },
+        metadata: index === 6
+          ? { paperclipBuiltInAgent: { key: "reflection-coach" }, custom: "preserve" }
+          : { custom: `agent-${index + 1}` },
+      })));
+      await db.insert(actual.issues).values({ id: randomUUID(), companyId: companyIds[0]!, title: "Preserve issue", status: "todo" });
+      await db.insert(actual.heartbeatRuns).values({ id: runId, companyId: companyIds[0]!, agentId: agentIds[0]!, status: "failed" });
+      await db.insert(actual.principalPermissionGrants).values({ companyId: companyIds[0]!, principalType: "agent", principalId: agentIds[0]!, permissionKey: "tasks:assign" });
+      await db.insert(actual.approvals).values({ companyId: companyIds[1]!, type: "hire_agent", status: "pending", payload: { preserve: true } });
+      await db.insert(actual.activityLog).values({ companyId: companyIds[2]!, actorId: "system", action: "agent.paused", entityType: "agent", entityId: agentIds[2]!, agentId: agentIds[2]!, runId });
+      await db.insert(actual.builtInManagedResources).values({ companyId: companyIds[2]!, bundleKey: "reflection-coach", resourceKind: "agent", resourceKey: "primary", resourceId: agentIds[6]!, stockVersion: "custom", stockHash: "preserve", defaultsJson: { preserve: true } });
+      await db.insert(actual.agentConfigRevisions).values({ companyId: companyIds[2]!, agentId: agentIds[6]!, source: "patch", changedKeys: ["metadata"], beforeConfig: { custom: "before" }, afterConfig: { custom: "preserve" } });
+      createDbMock.mockReturnValue(db as never);
+      loadConfigMock.mockReturnValue(buildTestConfig({ databaseUrl: tempDb.connectionString }));
+      const before = await snapshot();
 
-    expect(createDbMock).toHaveBeenCalledTimes(2);
-    expect(reconcileBuiltInAgentsOnStartupMock).not.toHaveBeenCalled();
-    expect(fixtureDb.persistedState).toEqual(before);
-  });
+      await startServer();
+      await startServer();
+
+      expect(reconcileBuiltInAgentsOnStartupMock).not.toHaveBeenCalled();
+      expect(await snapshot()).toEqual(before);
+    } finally {
+      await tempDb.cleanup();
+    }
+  }, 30_000);
 
   it("keeps built-in agent startup reconciliation enabled when explicitly set to one", async () => {
     process.env.PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP = "1";

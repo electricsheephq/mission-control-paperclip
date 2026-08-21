@@ -79,6 +79,17 @@ test("build script targets Linux x64 externals, restores source skills, and norm
   assert.match(script, /restore_skill_dirs/);
   assert.match(script, /no Linux x64 CLI runtime externals resolved/);
   assert.match(script, /tar --owner=0 --group=0 --numeric-owner/);
+  assert.match(script, /source ref does not match the checked-out commit/);
+  assert.match(script, /refusing to build an evaOS runtime artifact from a dirty checkout/);
+  assert.match(script, /OUT_DIR="\$\(cd "\$OUT_DIR" && pwd -P\)"/);
+  assert.match(script, /prepare-server-ui-dist\.sh/);
+  assert.ok(script.indexOf("prepare-server-ui-dist.sh") > script.indexOf('if [[ "$SKIP_BUILD" != "1" ]]'));
+});
+
+test("release publication is restricted to the default branch", async () => {
+  const workflow = await readFile(new URL("../.github/workflows/evaos-runtime-release.yml", import.meta.url), "utf8");
+  assert.match(workflow, /EVAOS_RELEASE_REF: \$\{\{ github\.ref \}\}/);
+  assert.match(workflow, /EVAOS_RELEASE_REF" != "refs\/heads\/master"/);
 });
 
 test("createArtifactManifest records source and checksum metadata", () => {
