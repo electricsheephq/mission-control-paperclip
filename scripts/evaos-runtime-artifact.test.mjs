@@ -32,15 +32,14 @@ test("parseArtifactArgs requires a version and output directory", () => {
       "/tmp/evaos",
       "--source-ref",
       "5e99b8c1",
-      "--skip-build",
+      "--skip-smoke",
     ]),
     {
       help: false,
       version: "2026.522.0-canary.0",
       outDir: "/tmp/evaos",
       sourceRef: "5e99b8c1",
-      skipBuild: true,
-      skipSmoke: false,
+      skipSmoke: true,
       keepStage: false,
     },
   );
@@ -82,14 +81,14 @@ test("build script targets Linux x64 externals, restores source skills, and norm
   assert.match(script, /source ref does not match the checked-out commit/);
   assert.match(script, /refusing to build an evaOS runtime artifact from a dirty checkout/);
   assert.match(script, /fs\.realpathSync\(candidate\)/);
-  assert.match(script, /output directory must not be server\/ui-dist or a descendant/);
+  assert.match(script, /output directory must be outside the source repository/);
   assert.ok(
-    script.indexOf("output directory must not be server/ui-dist or a descendant")
+    script.indexOf("output directory must be outside the source repository")
       < script.indexOf('mkdir -p "$OUT_DIR"'),
   );
   assert.match(script, /cp -R "\$REPO_ROOT\/skills" "\$PACKAGE_ROOT\/skills"/);
   assert.match(script, /prepare-server-ui-dist\.sh/);
-  assert.ok(script.indexOf("prepare-server-ui-dist.sh") > script.indexOf('if [[ "$SKIP_BUILD" != "1" ]]'));
+  assert.doesNotMatch(script, /--skip-build|SKIP_BUILD/);
 });
 
 test("release publication is restricted to the default branch", async () => {

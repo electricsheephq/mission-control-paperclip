@@ -5,7 +5,6 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VERSION=""
 OUT_DIR=""
 SOURCE_REF="HEAD"
-SKIP_BUILD=0
 SKIP_SMOKE=0
 KEEP_STAGE=0
 BUILD_EXECUTED=0
@@ -26,7 +25,6 @@ Options:
   --version VERSION    Artifact/runtime version to stamp into the deployed tree.
   --out-dir DIR        Output directory for tarball, sha256, and manifest.
   --source-ref REF     Source ref recorded in the manifest (default: HEAD).
-  --skip-build         Reuse existing build outputs before pnpm deploy.
   --skip-smoke         Do not run local artifact command/grep smoke checks.
   --keep-stage         Keep the temporary deploy stage for inspection.
   -h, --help           Show this help.
@@ -38,7 +36,6 @@ while [[ $# -gt 0 ]]; do
     --version) VERSION="${2:?missing version}"; shift 2 ;;
     --out-dir) OUT_DIR="${2:?missing output directory}"; shift 2 ;;
     --source-ref) SOURCE_REF="${2:?missing source ref}"; shift 2 ;;
-    --skip-build) SKIP_BUILD=1; shift ;;
     --skip-smoke) SKIP_SMOKE=1; shift ;;
     --keep-stage) KEEP_STAGE=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -78,8 +75,8 @@ OUT_DIR="$(node -e '
   process.stdout.write(path.join(fs.realpathSync(candidate), ...suffix));
 ' "$OUT_DIR")"
 case "$OUT_DIR/" in
-  "$REPO_ROOT/server/ui-dist/"*)
-    echo "ERROR: output directory must not be server/ui-dist or a descendant" >&2
+  "$REPO_ROOT/"*)
+    echo "ERROR: output directory must be outside the source repository" >&2
     exit 1
     ;;
 esac
@@ -124,11 +121,9 @@ trap cleanup EXIT
 
 cd "$REPO_ROOT"
 
-if [[ "$SKIP_BUILD" != "1" ]]; then
-  pnpm run preflight:workspace-links
-  pnpm build
-  node "$REPO_ROOT/scripts/build-standalone-public-packages.mjs"
-fi
+pnpm run preflight:workspace-links
+pnpm build
+node "$REPO_ROOT/scripts/build-standalone-public-packages.mjs"
 
 BUILD_EXECUTED=1
 mkdir -p "$SKILLS_BACKUP_ROOT/server"

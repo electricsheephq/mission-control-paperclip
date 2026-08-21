@@ -45,7 +45,6 @@ export function parseArtifactArgs(argv) {
     version: "",
     outDir: "",
     sourceRef: "",
-    skipBuild: false,
     skipSmoke: false,
     keepStage: false,
   };
@@ -60,8 +59,6 @@ export function parseArtifactArgs(argv) {
       parsed.outDir = argv[++index] ?? "";
     } else if (arg === "--source-ref") {
       parsed.sourceRef = argv[++index] ?? "";
-    } else if (arg === "--skip-build") {
-      parsed.skipBuild = true;
     } else if (arg === "--skip-smoke") {
       parsed.skipSmoke = true;
     } else if (arg === "--keep-stage") {
