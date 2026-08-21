@@ -3,10 +3,6 @@ name: evaOS Runtime Release
 on:
   workflow_dispatch:
     inputs:
-      source_ref:
-        description: Exact 40-character commit SHA to build
-        required: true
-        type: string
       version:
         description: Internal evaOS Paperclip runtime version
         required: true
@@ -41,7 +37,6 @@ jobs:
       - name: Validate release inputs
         env:
           EVAOS_ARTIFACT_VERSION: ${{ inputs.version }}
-          EVAOS_ARTIFACT_SOURCE_REF: ${{ inputs.source_ref }}
         run: |
           case "$EVAOS_ARTIFACT_VERSION" in
             ""|*[!0-9A-Za-z._-]*)
@@ -49,22 +44,18 @@ jobs:
               exit 2
               ;;
           esac
-          if [[ ! "$EVAOS_ARTIFACT_SOURCE_REF" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "evaOS artifact source ref must be an exact lowercase 40-character commit SHA" >&2
-            exit 2
-          fi
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ inputs.source_ref }}
+          ref: ${{ github.sha }}
 
       - name: Verify exact source commit
         id: source
         env:
-          EVAOS_ARTIFACT_SOURCE_REF: ${{ inputs.source_ref }}
+          EVAOS_ARTIFACT_SOURCE_REF: ${{ github.sha }}
         run: |
           source_sha="$(git rev-parse HEAD)"
           test "$source_sha" = "$EVAOS_ARTIFACT_SOURCE_REF"
@@ -90,7 +81,7 @@ jobs:
       - name: Build evaOS runtime artifact
         env:
           EVAOS_ARTIFACT_VERSION: ${{ inputs.version }}
-          EVAOS_ARTIFACT_SOURCE_REF: ${{ inputs.source_ref }}
+          EVAOS_ARTIFACT_SOURCE_REF: ${{ steps.source.outputs.sha }}
         run: |
           mkdir -p dist/evaos-artifacts
           ./scripts/build-evaos-runtime-artifact.sh \
