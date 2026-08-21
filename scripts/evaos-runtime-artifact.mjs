@@ -236,6 +236,7 @@ function nodeModulePackagePath(nodeModulesPath, packageName) {
 async function findDeployedDependencyRoot(packageRoot, packageName) {
   const nodeModulesPath = path.join(packageRoot, "node_modules");
   const directPath = nodeModulePackagePath(nodeModulesPath, packageName);
+  const installRoot = await realpath(packageRoot);
   const packageJsons = [
     path.join(packageRoot, "package.json"),
     ...(await listScopedPaperclipPackageJsons(packageRoot)),
@@ -250,7 +251,6 @@ async function findDeployedDependencyRoot(packageRoot, packageName) {
         .resolve(`${packageName}/package.json`);
       const candidate = path.dirname(resolvedPackageJson);
       const target = await realpath(candidate);
-      const installRoot = await realpath(packageRoot);
       if (!isPathInside(target, installRoot)) {
         throw new Error(`declared dependency for CLI external ${packageName} resolved outside artifact tree`);
       }
@@ -272,6 +272,10 @@ async function findDeployedDependencyRoot(packageRoot, packageName) {
   if (declaredCandidates.length === 1) return declaredCandidates[0];
 
   if (await pathExists(directPath)) {
+    const target = await realpath(directPath);
+    if (!isPathInside(target, installRoot)) {
+      throw new Error(`direct dependency for CLI external ${packageName} resolved outside artifact tree`);
+    }
     return directPath;
   }
 
@@ -289,6 +293,9 @@ async function findDeployedDependencyRoot(packageRoot, packageName) {
     );
     if (await pathExists(candidate)) {
       const target = await realpath(candidate);
+      if (!isPathInside(target, installRoot)) {
+        throw new Error(`deployed dependency for CLI external ${packageName} resolved outside artifact tree`);
+      }
       if (!candidatesByTarget.has(target)) candidatesByTarget.set(target, candidate);
     }
   }

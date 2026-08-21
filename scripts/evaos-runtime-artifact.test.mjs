@@ -189,7 +189,7 @@ test("linkCliRuntimeExternals rejects ambiguous deployed dependency versions", a
 test("linkCliRuntimeExternals deduplicates pnpm aliases to one physical package", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-evaos-links-aliases-"));
   const packageRoot = path.join(root, "paperclipai");
-  const target = path.join(root, "runtime-target");
+  const target = path.join(packageRoot, "node_modules", ".pnpm", "runtime-target");
   try {
     await mkdir(target, { recursive: true });
     for (const name of ["runtime@1.0.0", "runtime@alias"]) {
@@ -253,6 +253,35 @@ test("linkCliRuntimeExternals rejects declared dependencies outside the artifact
     await symlink(outside, path.join(sharedStoreRoot, "runtime"));
     await mkdir(path.join(packageRoot, "node_modules", "@paperclipai"), { recursive: true });
     await symlink(sharedRoot, path.join(packageRoot, "node_modules", "@paperclipai", "shared"));
+    await assert.rejects(linkCliRuntimeExternals(packageRoot, ["runtime"]), /outside artifact tree/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("linkCliRuntimeExternals rejects a direct dependency outside the artifact tree", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-evaos-links-direct-outside-"));
+  const packageRoot = path.join(root, "paperclipai");
+  const outside = path.join(root, "outside-runtime");
+  try {
+    await mkdir(path.join(packageRoot, "node_modules"), { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await symlink(outside, path.join(packageRoot, "node_modules", "runtime"));
+    await assert.rejects(linkCliRuntimeExternals(packageRoot, ["runtime"]), /outside artifact tree/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("linkCliRuntimeExternals rejects a pnpm dependency outside the artifact tree", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-evaos-links-pnpm-outside-"));
+  const packageRoot = path.join(root, "paperclipai");
+  const candidateParent = path.join(packageRoot, "node_modules", ".pnpm", "runtime@1", "node_modules");
+  const outside = path.join(root, "outside-runtime");
+  try {
+    await mkdir(candidateParent, { recursive: true });
+    await mkdir(outside, { recursive: true });
+    await symlink(outside, path.join(candidateParent, "runtime"));
     await assert.rejects(linkCliRuntimeExternals(packageRoot, ["runtime"]), /outside artifact tree/);
   } finally {
     await rm(root, { recursive: true, force: true });
