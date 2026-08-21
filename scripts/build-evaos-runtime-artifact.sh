@@ -122,6 +122,7 @@ trap cleanup EXIT
 cd "$REPO_ROOT"
 
 pnpm run preflight:workspace-links
+pnpm -r --if-present clean
 pnpm build
 node "$REPO_ROOT/scripts/build-standalone-public-packages.mjs"
 

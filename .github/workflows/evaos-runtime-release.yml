@@ -88,20 +88,21 @@ jobs:
         env:
           EVAOS_ARTIFACT_VERSION: ${{ inputs.version }}
           EVAOS_ARTIFACT_SOURCE_REF: ${{ steps.source.outputs.sha }}
+          EVAOS_ARTIFACT_OUT_DIR: ${{ runner.temp }}/evaos-artifacts
         run: |
           ./scripts/build-evaos-runtime-artifact.sh \
             --version "$EVAOS_ARTIFACT_VERSION" \
             --source-ref "$EVAOS_ARTIFACT_SOURCE_REF" \
-            --out-dir dist/evaos-artifacts
+            --out-dir "$EVAOS_ARTIFACT_OUT_DIR"
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: evaos-paperclip-runtime-${{ inputs.version }}
           path: |
-            dist/evaos-artifacts/*.tgz
-            dist/evaos-artifacts/*.sha256
-            dist/evaos-artifacts/manifest.json
+            ${{ runner.temp }}/evaos-artifacts/*.tgz
+            ${{ runner.temp }}/evaos-artifacts/*.sha256
+            ${{ runner.temp }}/evaos-artifacts/manifest.json
           if-no-files-found: error
 
   publish:
@@ -117,15 +118,15 @@ jobs:
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: evaos-paperclip-runtime-${{ inputs.version }}
-          path: dist/evaos-artifacts
+          path: ${{ runner.temp }}/evaos-artifacts
 
       - name: Verify downloaded artifact receipt
         env:
           EVAOS_ARTIFACT_SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
         run: |
-          test "$(jq -r '.sourceSha' dist/evaos-artifacts/manifest.json)" = "$EVAOS_ARTIFACT_SOURCE_SHA"
+          test "$(jq -r '.sourceSha' "$RUNNER_TEMP/evaos-artifacts/manifest.json")" = "$EVAOS_ARTIFACT_SOURCE_SHA"
           (
-            cd dist/evaos-artifacts
+            cd "$RUNNER_TEMP/evaos-artifacts"
             sha256sum --check ./*.sha256
           )
 
@@ -138,11 +139,16 @@ jobs:
           EVAOS_ARTIFACT_PRERELEASE: ${{ inputs.prerelease }}
         run: |
           tag="evaos-paperclip/v${EVAOS_ARTIFACT_VERSION}"
+          encoded_tag="$(jq -rn --arg value "$tag" '$value | @uri')"
+          if gh api "repos/${GH_REPO}/git/ref/tags/${encoded_tag}" >/dev/null 2>&1; then
+            existing_sha="$(gh api "repos/${GH_REPO}/commits/${encoded_tag}" --jq .sha)"
+            test "$existing_sha" = "$EVAOS_ARTIFACT_SOURCE_SHA"
+          fi
           args=(
             release create "$tag"
-            dist/evaos-artifacts/*.tgz
-            dist/evaos-artifacts/*.sha256
-            dist/evaos-artifacts/manifest.json
+            "$RUNNER_TEMP"/evaos-artifacts/*.tgz
+            "$RUNNER_TEMP"/evaos-artifacts/*.sha256
+            "$RUNNER_TEMP"/evaos-artifacts/manifest.json
             --title "evaOS Paperclip Runtime ${EVAOS_ARTIFACT_VERSION}"
             --target "$EVAOS_ARTIFACT_SOURCE_SHA"
             --notes "Internal evaOS/RVM Paperclip runtime artifact built from exact commit ${EVAOS_ARTIFACT_SOURCE_SHA}."

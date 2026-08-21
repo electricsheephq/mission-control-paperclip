@@ -6,6 +6,7 @@ import {
   mkdtemp,
   readFile,
   readlink,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -87,6 +88,7 @@ test("build script targets Linux x64 externals, restores source skills, and norm
       < script.indexOf('mkdir -p "$OUT_DIR"'),
   );
   assert.match(script, /cp -R "\$REPO_ROOT\/skills" "\$PACKAGE_ROOT\/skills"/);
+  assert.match(script, /pnpm -r --if-present clean/);
   assert.match(script, /prepare-server-ui-dist\.sh/);
   assert.doesNotMatch(script, /--skip-build|SKIP_BUILD/);
 });
@@ -95,6 +97,9 @@ test("release publication is restricted to the default branch", async () => {
   const workflow = await readFile(new URL("../.github/workflows/evaos-runtime-release.yml", import.meta.url), "utf8");
   assert.match(workflow, /EVAOS_RELEASE_REF: \$\{\{ github\.ref \}\}/);
   assert.match(workflow, /EVAOS_RELEASE_REF" != "refs\/heads\/master"/);
+  assert.match(workflow, /runner\.temp }}\/evaos-artifacts/);
+  assert.match(workflow, /git\/ref\/tags\/\$\{encoded_tag}/);
+  assert.match(workflow, /test "\$existing_sha" = "\$EVAOS_ARTIFACT_SOURCE_SHA"/);
 });
 
 test("createArtifactManifest records source and checksum metadata", () => {
@@ -193,6 +198,28 @@ test("linkCliRuntimeExternals deduplicates pnpm aliases to one physical package"
       await symlink(target, path.join(parent, "runtime"));
     }
     assert.deepEqual(await linkCliRuntimeExternals(packageRoot, ["runtime"]), ["runtime"]);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("linkCliRuntimeExternals prefers the version reachable from a direct dependency", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-evaos-links-direct-dependency-"));
+  const packageRoot = path.join(root, "paperclipai");
+  const sharedRoot = path.join(packageRoot, "node_modules", "@paperclipai", "shared");
+  const expected = path.join(root, "zod-4");
+  try {
+    await mkdir(path.join(sharedRoot, "node_modules"), { recursive: true });
+    await mkdir(expected, { recursive: true });
+    await mkdir(path.join(packageRoot, "node_modules", ".pnpm", "zod@3", "node_modules", "zod"), { recursive: true });
+    await writeFile(path.join(packageRoot, "package.json"), JSON.stringify({ dependencies: { "@paperclipai/shared": "workspace:*" } }));
+    await symlink(expected, path.join(sharedRoot, "node_modules", "zod"));
+
+    assert.deepEqual(await linkCliRuntimeExternals(packageRoot, ["zod"]), ["zod"]);
+    assert.equal(
+      await realpath(path.join(packageRoot, "node_modules", "zod")),
+      await realpath(expected),
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

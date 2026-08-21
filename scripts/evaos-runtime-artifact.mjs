@@ -239,6 +239,34 @@ async function findDeployedDependencyRoot(packageRoot, packageName) {
     return directPath;
   }
 
+  const packageJsonText = await readFile(path.join(packageRoot, "package.json"), "utf8").catch((err) => {
+    if (err?.code === "ENOENT") return "{}";
+    throw err;
+  });
+  const packageJson = JSON.parse(packageJsonText);
+  const directDependencyNames = Object.keys(packageJson.dependencies ?? {}).sort();
+  const nestedCandidatesByTarget = new Map();
+  for (const dependencyName of directDependencyNames) {
+    const dependencyRoot = nodeModulePackagePath(nodeModulesPath, dependencyName);
+    const nestedCandidate = nodeModulePackagePath(
+      path.join(dependencyRoot, "node_modules"),
+      packageName,
+    );
+    if (await pathExists(nestedCandidate)) {
+      const target = await realpath(nestedCandidate);
+      if (!nestedCandidatesByTarget.has(target)) {
+        nestedCandidatesByTarget.set(target, nestedCandidate);
+      }
+    }
+  }
+  const nestedCandidates = [...nestedCandidatesByTarget.values()];
+  if (nestedCandidates.length > 1) {
+    throw new Error(
+      `ambiguous direct dependency for CLI external ${packageName}: ${nestedCandidates.join(", ")}`,
+    );
+  }
+  if (nestedCandidates.length === 1) return nestedCandidates[0];
+
   const pnpmStorePath = path.join(nodeModulesPath, ".pnpm");
   const entries = await readdir(pnpmStorePath, { withFileTypes: true }).catch((err) => {
     if (err?.code === "ENOENT") return [];
