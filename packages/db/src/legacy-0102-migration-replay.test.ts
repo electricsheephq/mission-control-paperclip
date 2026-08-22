@@ -78,7 +78,7 @@ async function runServerOnce(url: string, sql: postgres.Sql): Promise<void> {
           healthSeen = true;
           const current = JSON.stringify(await fullDataSnapshot(sql));
           stablePolls = current === previous ? stablePolls + 1 : 0; previous = current;
-          if (stablePolls >= 5) return;
+          if (stablePolls >= 1) return;
         }
       } catch { /* Wait for health and a stable post-reconciliation database. */ }
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -193,6 +193,8 @@ describe.sequential("legacy 0102 migration replay", () => {
     expect((await inspectMigrations(startupUrl)).appliedMigrations.at(-1)).toBe("0226_tan_colossus.sql");
     expect(await legacySemanticSnapshot(startupSql)).toEqual(legacyBefore);
     expect(await startupSql`SELECT id,company_id,name,status,adapter_type,adapter_config,runtime_config,default_environment_id,pause_reason FROM agents ORDER BY id`).toEqual(protectedBefore);
+    const startupAfterFirst = await fullDataSnapshot(startupSql);
+    await runServerOnce(startupUrl, startupSql); expect(await fullDataSnapshot(startupSql)).toEqual(startupAfterFirst);
     await startupSql.end();
   }, 360_000);
 });
