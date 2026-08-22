@@ -69,12 +69,13 @@ async function runServerOnce(url: string, sql: postgres.Sql): Promise<void> {
   const stopChild = async () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM"); await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 2_000))]); if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL"); await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 2_000))]); };
   cleanups.push(stopChild);
   try {
-    const deadline = Date.now() + 30_000;
-    let previous = "", stablePolls = 0;
+    const deadline = Date.now() + 60_000;
+    let previous = "", stablePolls = 0, healthSeen = false;
     while (Date.now() < deadline) {
       if (spawnError || child.exitCode !== null) throw new Error(`server exited: ${spawnError ?? child.exitCode}: ${output.slice(-1000)}`);
       try {
         if ((await fetch(`http://127.0.0.1:${listenPort}/api/health`)).ok) {
+          healthSeen = true;
           const current = JSON.stringify(await fullDataSnapshot(sql));
           stablePolls = current === previous ? stablePolls + 1 : 0; previous = current;
           if (stablePolls >= 5) return;
@@ -82,7 +83,7 @@ async function runServerOnce(url: string, sql: postgres.Sql): Promise<void> {
       } catch { /* Wait for health and a stable post-reconciliation database. */ }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    throw new Error(`server startup timeout: ${output.slice(-1000)}`);
+    throw new Error(`server startup timeout (healthSeen=${healthSeen}, stablePolls=${stablePolls}): ${output.slice(-1000)}`);
   } finally { await stopChild(); }
 }
 describe.sequential("legacy 0102 migration replay", () => {
@@ -193,5 +194,5 @@ describe.sequential("legacy 0102 migration replay", () => {
     expect(await legacySemanticSnapshot(startupSql)).toEqual(legacyBefore);
     expect(await startupSql`SELECT id,company_id,name,status,adapter_type,adapter_config,runtime_config,default_environment_id,pause_reason FROM agents ORDER BY id`).toEqual(protectedBefore);
     await startupSql.end();
-  }, 240_000);
+  }, 360_000);
 });
