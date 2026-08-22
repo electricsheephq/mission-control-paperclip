@@ -42,7 +42,7 @@ const stableLegacyColumns: Record<string, string> = {
 };
 async function legacySemanticSnapshot(sql: postgres.Sql): Promise<Record<string, unknown>> {
   const result: Record<string, unknown> = {};
-  for (const [table, columns] of Object.entries(stableLegacyColumns)) result[table] = await sql.unsafe(`SELECT ${columns} FROM ${table} ORDER BY 1`);
+  for (const [table, columns] of Object.entries(stableLegacyColumns)) result[table] = await sql.unsafe(`SELECT ${columns} FROM ${table} ORDER BY jsonb_build_array(${columns})`);
   return result;
 }
 async function runServerOnce(url: string, sql: postgres.Sql): Promise<void> {
@@ -54,9 +54,9 @@ async function runServerOnce(url: string, sql: postgres.Sql): Promise<void> {
     server: { host: "127.0.0.1", port: listenPort, serveUi: false }, storage: { provider: "local_disk", localDisk: { baseDir: path.join(root, "storage") } },
     secrets: { provider: "local_encrypted", localEncrypted: { keyFilePath: path.join(root, "key") } }, telemetry: { enabled: false }, updates: { checkEnabled: false },
   }));
-  const child = spawn(path.join(repositoryRoot, "server/node_modules/.bin/tsx"), ["server/src/index.ts"], {
+  const child = spawn(process.execPath, ["--import", path.join(repositoryRoot, "server/node_modules/tsx/dist/loader.mjs"), "server/src/index.ts"], {
     cwd: repositoryRoot,
-    env: { ...process.env, PORT: String(listenPort), DATABASE_URL: url, DATABASE_MIGRATION_URL: url, PAPERCLIP_CONFIG: configPath, PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP: "0", PAPERCLIP_MIGRATION_AUTO_APPLY: "true", PAPERCLIP_OPEN_ON_LISTEN: "false",
+    env: { ...process.env, PORT: String(listenPort), DATABASE_URL: url, DATABASE_MIGRATION_URL: url, PAPERCLIP_CONFIG: configPath, PAPERCLIP_RECONCILE_BUILT_IN_AGENTS_ON_STARTUP: "0", PAPERCLIP_MIGRATION_AUTO_APPLY: "true", PAPERCLIP_OPEN_ON_LISTEN: "false", PAPERCLIP_EXECUTION_MODE: "any",
       PAPERCLIP_DECISION_SIGNING_SECRET: "0123456789abcdef0123456789abcdef", PAPERCLIP_SECRETS_MASTER_KEY: "0".repeat(64), HEARTBEAT_SCHEDULER_ENABLED: "true" },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -74,7 +74,7 @@ async function runServerOnce(url: string, sql: postgres.Sql): Promise<void> {
     while (Date.now() < deadline) {
       if (spawnError || child.exitCode !== null) throw new Error(`server exited: ${spawnError ?? child.exitCode}: ${output.slice(-1000)}`);
       try {
-        if ((await fetch(`http://127.0.0.1:${listenPort}/api/health`)).ok) {
+        const remainingMs = deadline - Date.now(); if (remainingMs <= 0) break; if ((await fetch(`http://127.0.0.1:${listenPort}/api/health`, { signal: AbortSignal.timeout(remainingMs) })).ok) {
           healthSeen = true;
           const current = JSON.stringify(await fullDataSnapshot(sql));
           stablePolls = current === previous ? stablePolls + 1 : 0; previous = current;
